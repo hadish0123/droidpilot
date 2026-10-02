@@ -167,6 +167,9 @@ Text ───────────────┤            │            
                     │   OpenAI Responses Provider  │
                     │   + ChatGPT-plan OAuth       │
                     │                              │
+                    │      Tool Runtime / Policy   │
+                    │  registry · risk · confirm   │
+                    │            │                 │
                     │  Android Action Engine       │
                     │            │                 │
                     │  Accessibility Service       │
@@ -182,6 +185,11 @@ External MCP client ↔ PRIME P6 MCP ↔ authenticated WebSocket ↔ Android Act
 authentication, model discovery, retries, HTTP transport and Responses SSE parsing
 live behind the `AiProvider` boundary so additional providers can be implemented
 without coupling them to the agent loop.
+
+Phone actions pass through `PrimeToolRegistry` and `PrimeToolRuntime` before they
+reach `PhoneController`. The runtime rejects unregistered commands, assigns a
+minimum `ToolRisk`, elevates semantic send/delete/payment-style clicks, and blocks
+sensitive or destructive actions until the user has confirmed the task.
 
 ## Identity
 
