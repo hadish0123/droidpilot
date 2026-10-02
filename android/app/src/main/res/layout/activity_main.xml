@@ -803,6 +803,35 @@
                 android:textAllCaps="false"
                 app:cornerRadius="14dp" />
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="@string/ui_remote_mcp_url"
+                android:textColor="@color/text_muted"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/tvRemoteMcpUrl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/edit_text_bg"
+                android:fontFamily="monospace"
+                android:padding="10dp"
+                android:text="--"
+                android:textColor="@color/text_primary"
+                android:textIsSelectable="true"
+                android:textSize="10sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCopyRemoteMcp"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/ui_remote_copy_mcp"
+                android:textAllCaps="false" />
+
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnStopRemote"
                 style="@style/Widget.Material3.Button.TextButton"
