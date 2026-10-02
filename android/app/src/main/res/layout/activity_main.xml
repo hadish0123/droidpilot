@@ -391,6 +391,14 @@
                     android:visibility="gone" />
             </LinearLayout>
 
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnTestOpenAi"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Test OpenAI connection"
+                android:textAllCaps="false" />
+
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"

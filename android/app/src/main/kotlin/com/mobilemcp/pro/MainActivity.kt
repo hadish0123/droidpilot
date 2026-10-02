@@ -34,6 +34,7 @@ import com.mobilemcp.pro.model.CommandRequest
 import com.mobilemcp.pro.server.WebSocketCommandServer
 import com.mobilemcp.pro.service.ConnectionForegroundService
 import com.mobilemcp.pro.service.MobileAccessibilityService
+import com.mobilemcp.pro.service.VoiceSessionForegroundService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -117,6 +118,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnSignIn.setOnClickListener { connectChatGpt() }
         binding.btnSignOut.setOnClickListener { disconnectChatGpt() }
         binding.btnUsage.setOnClickListener { authManager.openUsageSettings() }
+        binding.btnTestOpenAi.setOnClickListener { testOpenAiConnection() }
 
         binding.btnSend.setOnClickListener { sendCurrentMessage() }
         binding.btnMic.setOnClickListener { startVoiceInput(autoSend = false) }
@@ -156,6 +158,11 @@ class MainActivity : AppCompatActivity() {
 
         appScope.launch {
             try {
+                binding.tvAgentStatus.text = "Checking OpenAI connection…"
+                withContext(Dispatchers.IO) {
+                    authManager.testOpenAiConnection()
+                }
+
                 val profile = authManager.signIn(
                     openBrowser = { uri ->
                         startActivity(Intent(Intent.ACTION_VIEW, uri))
@@ -193,6 +200,23 @@ class MainActivity : AppCompatActivity() {
                 "کد ورود منقضی شد. یک بار دیگر Continue with ChatGPT را بزن؛ ثبت PRIME حفظ شده و دوباره از صفر ساخته نمی‌شود."
             message.isNotBlank() -> "اتصال ChatGPT کامل نشد: $message"
             else -> "اتصال ChatGPT کامل نشد."
+        }
+    }
+
+    private fun testOpenAiConnection() {
+        if (isBusy) return
+        setBusy(true, "Testing OpenAI connection…")
+        appScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    authManager.testOpenAiConnection()
+                }
+                appendChat("PRIME", "اتصال شبکه PRIME به OpenAI سالم است.\n$result")
+            } catch (e: Exception) {
+                appendChat("PRIME", authFriendlyError(e))
+            } finally {
+                setBusy(false)
+            }
         }
     }
 
@@ -603,6 +627,7 @@ class MainActivity : AppCompatActivity() {
     private fun exitVoiceMode() {
         voiceModeActive = false
         voiceAutoSend = false
+        stopService(Intent(this, VoiceSessionForegroundService::class.java))
         speechRecognizer?.cancel()
         textToSpeech?.stop()
         binding.voiceOverlay.visibility = View.GONE
@@ -631,6 +656,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         voiceAutoSend = autoSend
+        if (voiceModeActive && autoSend) {
+            ensureVoiceForegroundService()
+        }
         ensureSpeechRecognizer()
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -646,6 +674,18 @@ class MainActivity : AppCompatActivity() {
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         }
         speechRecognizer?.startListening(intent)
+    }
+
+    private fun ensureVoiceForegroundService() {
+        try {
+            startForegroundService(
+                Intent(this, VoiceSessionForegroundService::class.java)
+            )
+        } catch (_: Exception) {
+            // PRIME can still listen while it is foreground. Some Android
+            // builds may block microphone FGS until all device permissions
+            // are fully granted.
+        }
     }
 
     private fun ensureSpeechRecognizer() {
@@ -967,6 +1007,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         if (isServerRunning) stopServer()
+        stopService(Intent(this, VoiceSessionForegroundService::class.java))
         voiceModeActive = false
         speechRecognizer?.destroy()
         speechRecognizer = null

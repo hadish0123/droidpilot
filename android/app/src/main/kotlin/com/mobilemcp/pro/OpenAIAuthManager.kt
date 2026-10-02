@@ -166,6 +166,12 @@ class OpenAIAuthManager(private val context: Context) {
             r.scopes.contains(REQUIRED_SCOPE)
     }
 
+    suspend fun testOpenAiConnection(): String = withContext(Dispatchers.IO) {
+        val discovery = getJsonWithRetry(DISCOVERY_ENDPOINT, attempts = 2)
+        val issuer = discovery.optString("issuer").ifBlank { ISSUER }
+        "OpenAI reachable • " + issuer
+    }
+
     suspend fun signIn(
         openBrowser: (Uri) -> Unit,
         onCallbackReceived: (() -> Unit)? = null
