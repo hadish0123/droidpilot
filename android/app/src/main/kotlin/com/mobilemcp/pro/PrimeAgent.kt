@@ -83,7 +83,11 @@ class PrimeAgent internal constructor(
 
     fun restoreConversation(lines: List<Pair<String, String>>) {
         chatHistory.clear()
-        phoneContext = false
+        // Prune the model's text history without forgetting that this chat is
+        // a phone-control session. Voice restores its history on every turn.
+        phoneContext = lines.any { (role, content) ->
+            role == "user" && content.isNotBlank() && PersianInput.isPhoneTask(content)
+        }
         lines.takeLast(12).forEach { (role, content) ->
             if (
                 (role == "user" || role == "assistant") &&

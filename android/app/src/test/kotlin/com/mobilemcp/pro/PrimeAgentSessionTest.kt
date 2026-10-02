@@ -103,6 +103,24 @@ class PrimeAgentSessionTest {
         }
     }
 
+    @Test fun restoringALongChatKeepsPhoneContextAfterTextHistoryIsPruned() = runBlocking {
+        ApiFixture().use { api ->
+            val agent = api.agent()
+            val history = mutableListOf("user" to "برو تلگرام", "assistant" to "تلگرام باز شد")
+            repeat(15) { history += "user" to "ممنون $it"; history += "assistant" to "خواهش می‌کنم" }
+            agent.restoreConversation(history)
+            api.answers += """{"type":"action","command":"set_text","params":{"text":"سلام"}}"""
+            api.answers += """{"type":"reply","text":"سلام را در کادر نوشتم"}"""
+            var typed = false
+            val outcome = turn(agent, "بنویس سلام", { command, params ->
+                assertEquals("set_text", command); assertEquals("سلام", params.getString("text"))
+                typed = true; PrimeActionResult(true, "OK")
+            })
+            assertTrue(typed)
+            assertEquals("سلام را در کادر نوشتم", outcome.text)
+        }
+    }
+
     @Test fun localNavigationDoesNotDependOnChatgptQuotaOrSignIn() = runBlocking {
         val offline = object : PrimeCredentials {
             override fun isSignedIn() = false
