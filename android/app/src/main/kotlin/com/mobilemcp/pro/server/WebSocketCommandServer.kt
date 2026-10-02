@@ -23,7 +23,7 @@ class WebSocketCommandServer(
     }
 
     private val gson = Gson()
-    private val executor = Executors.newFixedThreadPool(4)
+    private val executor = Executors.newSingleThreadExecutor()
     private val connectedClients = mutableSetOf<WebSocket>()
 
     // Optional: authentication token
@@ -61,6 +61,10 @@ class WebSocketCommandServer(
     }
 
     override fun onMessage(conn: WebSocket, message: String) {
+        // A rejected handshake must never get an opportunity to execute a
+        // command while its close frame is still being delivered.
+        if (!synchronized(connectedClients) { conn in connectedClients }) return
+        if (message.length > 1_000_000) { conn.close(1009, "Message too large"); return }
         executor.submit {
             try {
                 val request = gson.fromJson(message, CommandRequest::class.java)
@@ -69,8 +73,7 @@ class WebSocketCommandServer(
                     return@submit
                 }
 
-                onLog(">> ${request.command}" +
-                    if (request.params != null) " ${request.params}" else "")
+                onLog(">> ${request.command}")
 
                 val service = MobileAccessibilityService.instance
                 if (service == null) {
@@ -84,7 +87,6 @@ class WebSocketCommandServer(
                 val json = gson.toJson(finalResponse)
                 conn.send(json)
 
-                val preview = if (json.length > 200) json.take(200) + "..." else json
                 onLog("<< ${request.command}: ${if (finalResponse.success) "OK" else "ERR"}")
 
             } catch (e: JsonSyntaxException) {

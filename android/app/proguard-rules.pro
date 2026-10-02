@@ -1,3 +1,4 @@
 -keep class com.mobilemcp.pro.** { *; }
 -keep class org.java_websocket.** { *; }
 -dontwarn org.slf4j.**
+-keep class com.k2fsa.sherpa.onnx.** { *; }

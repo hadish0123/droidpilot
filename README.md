@@ -8,7 +8,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 
 - Chat directly inside the Android app
 - Voice command → Android speech recognition → PRIME
-- Voice reply through Android Text-to-Speech
+- Offline Persian voice replies with an embedded sherpa-onnx/Piper engine
 - **Continue with ChatGPT** for eligible ChatGPT Plus / Pro plan usage
 - No OpenAI API key required for the supported open-source plan-sharing flow
 - Native Android UI-tree reading through Accessibility Service
@@ -55,9 +55,15 @@ Official documentation:
 
 ## Voice
 
-The current ChatGPT-plan sharing flow does not use direct audio input. PRIME therefore uses Android's built-in `SpeechRecognizer` to turn speech into text, sends the text request through the authorized ChatGPT-plan flow, and reads the final answer with Android `TextToSpeech`.
+PRIME 6.0.8 speaks Persian independently of Google/Samsung Text-to-Speech. On first opening Voice or testing speech in settings, it downloads the **fa_IR ganji medium** Piper voice pack (64 MiB), verifies its pinned SHA-256 and safely installs the model, tokens and eSpeak language data in app-private storage. Downloads show progress, can be cancelled and can be retried. Allow 260 MB free space during installation.
 
-No separate speech API key is required.
+After installation, synthesis and playback run on the phone without a speech API key or a TTS network request. ChatGPT responses still require internet and an eligible connected account. Android `SpeechRecognizer` provides speech input and may require internet. Its language defaults to **fa-IR**, independently of the phone language; settings can switch input to English and adjust speech speed.
+
+The voice overlay displays the complete response, can be minimized to reveal the app below, and lets the user interrupt playback with the microphone button. Only a completed API response is spoken. The microphone resumes after the final audio samples have actually played. Closing Voice cancels the current agent job.
+
+Settings → **صدای فارسی · تنظیمات و آزمایش** downloads the pack when needed and plays a Persian test phrase. No external TTS engine or separate voice app is required.
+
+Upstream model documentation: https://k2-fsa.github.io/sherpa/onnx/tts/all/Persian/vits-piper-fa_IR-ganji-medium.html
 
 ## Android phone actions
 
@@ -90,8 +96,10 @@ Requirements:
 
 ```bash
 cd android
-./gradlew assembleDebug
+./gradlew testDebugUnitTest assembleDebug lintDebug
 ```
+
+The first online build downloads the pinned sherpa-onnx 1.13.8 AAR (48 MiB) and verifies its SHA-256. Later builds reuse `android/voice-runtime/`; this generated dependency is not committed to git.
 
 Debug APK:
 
@@ -126,7 +134,7 @@ The original external automation bridge is preserved as an advanced feature and 
 ```bash
 cd mcp-server
 npm ci
-npm run build
+npm test
 npm start
 ```
 
@@ -171,8 +179,12 @@ P6 is the PRIME product identity, not a claim that OpenAI exposes a foundation m
 
 GitHub Actions builds both:
 
-- Android debug APK artifact: **PRIME-P6-APK**
-- PRIME P6 MCP TypeScript server
+- Android unit tests, lint and debug APK artifact: **PRIME-P6-APK**
+- Android quality reports: **PRIME-quality-reports**
+- PRIME P6 MCP TypeScript build and socket integration tests
+- A native Persian model synthesis smoke test
+
+See [TESTING.md](TESTING.md) for the physical-device acceptance checks.
 
 ## License and upstream
 

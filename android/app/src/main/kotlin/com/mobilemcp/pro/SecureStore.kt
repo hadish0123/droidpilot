@@ -23,11 +23,12 @@ class SecureStore(context: Context) {
     companion object {
         private const val KEY_ALIAS = "prime_p6_oauth_store_v1"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
+        private val keyLock = Any()
     }
 
-    private fun secretKey(): SecretKey {
+    private fun secretKey(): SecretKey = synchronized(keyLock) {
         val existing = keyStore.getKey(KEY_ALIAS, null) as? SecretKey
-        if (existing != null) return existing
+        if (existing != null) return@synchronized existing
 
         val generator = KeyGenerator.getInstance(
             KeyProperties.KEY_ALGORITHM_AES,
@@ -43,7 +44,7 @@ class SecureStore(context: Context) {
                 .setKeySize(256)
                 .build()
         )
-        return generator.generateKey()
+        generator.generateKey()
     }
 
     fun putString(key: String, value: String?) {

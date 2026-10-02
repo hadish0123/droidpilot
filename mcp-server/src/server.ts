@@ -4,7 +4,7 @@ import { toolDefinitions } from "./tools.js";
 
 type TextContent = { type: "text"; text: string };
 type ImageContent = { type: "image"; data: string; mimeType: string };
-type ToolResult = { content: (TextContent | ImageContent)[] };
+type ToolResult = { content: (TextContent | ImageContent)[]; isError?: boolean };
 
 export function createServer(): McpServer {
   const server = new McpServer({
@@ -34,6 +34,7 @@ export function createServer(): McpServer {
     if (!response.success) {
       return {
         content: [{ type: "text", text: `Error: ${response.error}` }],
+        isError: true,
       };
     }
 
@@ -79,9 +80,7 @@ export function createServer(): McpServer {
       authToken: toolDefinitions.connect.inputSchema.authToken,
     },
     async ({ host, port, authToken }): Promise<ToolResult> => {
-      if (client?.connected) {
-        client.disconnect();
-      }
+      client?.disconnect();
 
       client = new AndroidClient(host, port, authToken);
 
@@ -105,6 +104,7 @@ export function createServer(): McpServer {
           ],
         };
       } catch (e) {
+        client?.disconnect();
         client = null;
         return {
           content: [
@@ -113,6 +113,7 @@ export function createServer(): McpServer {
               text: `Failed to connect to ${host}:${port} - ${(e as Error).message}`,
             },
           ],
+          isError: true,
         };
       }
     }

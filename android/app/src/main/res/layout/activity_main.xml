@@ -92,7 +92,7 @@
                 android:paddingStart="16dp"
                 android:paddingEnd="16dp"
                 android:paddingBottom="4dp"
-                android:text="Ready"
+                android:text="@string/ui_ready"
                 android:textColor="@color/accent"
                 android:textSize="11sp" />
 
@@ -103,7 +103,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="18dp"
                 android:layout_marginEnd="18dp"
-                android:text="Connect ChatGPT to use PRIME P6"
+                android:text="@string/ui_connect"
                 android:textAllCaps="false"
                 android:textColor="@color/accent"
                 android:visibility="gone" />
@@ -278,7 +278,7 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:gravity="center"
-                    android:text="PRIME Voice"
+                    android:text="@string/ui_voice_title"
                     android:textColor="@color/text_primary"
                     android:textSize="18sp"
                     android:textStyle="bold" />
@@ -314,7 +314,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="24dp"
                     android:gravity="center"
-                    android:text="Listening…"
+                    android:text="@string/ui_listening"
                     android:textColor="@color/text_secondary"
                     android:textSize="16sp" />
 
@@ -324,7 +324,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
                     android:gravity="center"
-                    android:text="Speak or type below • PRIME replies by voice"
+                    android:text="@string/ui_voice_hint"
                     android:textColor="@color/text_muted"
                     android:textSize="12sp" />
             </LinearLayout>
@@ -347,7 +347,7 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:background="@android:color/transparent"
-                    android:hint="Type to PRIME…"
+                    android:hint="@string/ui_voice_input"
                     android:imeOptions="actionSend"
                     android:inputType="textCapSentences|textMultiLine"
                     android:maxLines="4"
@@ -411,7 +411,7 @@
             android:paddingTop="12dp"
             android:paddingEnd="20dp"
             android:paddingBottom="4dp"
-            android:text="PRIME Chats"
+            android:text="@string/ui_chats"
             android:textColor="@color/text_primary"
             android:textSize="22sp"
             android:textStyle="bold" />
@@ -422,7 +422,7 @@
             android:paddingStart="20dp"
             android:paddingEnd="20dp"
             android:paddingBottom="10dp"
-            android:text="Chats are saved locally on this phone"
+            android:text="@string/ui_chat_privacy"
             android:textColor="@color/text_muted"
             android:textSize="12sp" />
 
@@ -433,7 +433,7 @@
             android:layout_marginStart="16dp"
             android:layout_marginTop="4dp"
             android:layout_marginEnd="16dp"
-            android:text="＋  New chat"
+            android:text="@string/ui_new_chat"
             android:textAllCaps="false"
             app:cornerRadius="14dp" />
 
@@ -483,7 +483,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
-                android:text="P6 • Android action assistant"
+                android:text="@string/ui_description"
                 android:textColor="@color/text_muted"
                 android:textSize="12sp" />
 
@@ -497,7 +497,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="ChatGPT account"
+                android:text="@string/ui_account"
                 android:textColor="@color/text_muted"
                 android:textSize="12sp"
                 android:textStyle="bold" />
@@ -507,7 +507,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="Not connected"
+                android:text="@string/ui_not_connected"
                 android:textColor="@color/text_primary"
                 android:textSize="14sp" />
 
@@ -531,7 +531,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Manage usage"
+                    android:text="@string/ui_usage"
                     android:textAllCaps="false"
                     android:visibility="gone" />
 
@@ -541,7 +541,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Sign out"
+                    android:text="@string/ui_signout"
                     android:textAllCaps="false"
                     android:visibility="gone" />
             </LinearLayout>
@@ -551,7 +551,7 @@
                 style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Test OpenAI connection"
+                android:text="@string/ui_test_connection"
                 android:textAllCaps="false" />
 
             <View
@@ -564,7 +564,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Phone control"
+                android:text="@string/ui_phone_control"
                 android:textColor="@color/text_muted"
                 android:textSize="12sp"
                 android:textStyle="bold" />
@@ -588,7 +588,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginStart="10dp"
                     android:layout_weight="1"
-                    android:text="OFF"
+                    android:text="@string/ui_off"
                     android:textColor="@color/text_primary"
                     android:textSize="14sp" />
 
@@ -606,7 +606,7 @@
                 style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Voice overlay permission"
+                android:text="@string/ui_overlay_permission"
                 android:textAllCaps="false" />
 
             <com.google.android.material.button.MaterialButton
@@ -614,7 +614,7 @@
                 style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Voice output / Text-to-Speech settings"
+                android:text="@string/ui_voice_settings"
                 android:textAllCaps="false" />
 
             <View
@@ -627,7 +627,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Chats &amp; data"
+                android:text="@string/ui_chat_data"
                 android:textColor="@color/text_muted"
                 android:textSize="12sp"
                 android:textStyle="bold" />
@@ -637,7 +637,7 @@
                 style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Chat history"
+                android:text="@string/ui_history"
                 android:textAllCaps="false" />
 
             <com.google.android.material.button.MaterialButton
@@ -645,7 +645,7 @@
                 style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Delete all local chats"
+                android:text="@string/ui_delete_chats"
                 android:textAllCaps="false" />
 
             <View
@@ -658,7 +658,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Device Bridge • Advanced"
+                android:text="@string/ui_bridge_advanced"
                 android:textColor="@color/text_muted"
                 android:textSize="12sp"
                 android:textStyle="bold" />
@@ -741,7 +741,7 @@
                     android:layout_height="wrap_content"
                     android:fontFamily="monospace"
                     android:textColor="@color/text_muted"
-                    android:textSize="9sp" />
+                    android:textSize="11sp" />
             </ScrollView>
 
             <View
@@ -756,7 +756,7 @@
                 style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="About PRIME P6"
+                android:text="@string/ui_about"
                 android:textAllCaps="false" />
         </LinearLayout>
     </ScrollView>

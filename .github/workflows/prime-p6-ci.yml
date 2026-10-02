@@ -34,7 +34,7 @@ jobs:
         working-directory: android
         run: |
           chmod +x ./gradlew
-          ./gradlew --no-daemon clean assembleDebug
+          ./gradlew --no-daemon clean testDebugUnitTest assembleDebug lintDebug
           cp app/build/outputs/apk/debug/app-debug.apk /tmp/PRIME-P6-debug.apk
 
       - name: Upload PRIME P6 APK
@@ -44,6 +44,15 @@ jobs:
           path: /tmp/PRIME-P6-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload Android test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PRIME-quality-reports
+          path: |
+            android/app/build/reports/tests/
+            android/app/build/reports/lint-results-debug.html
 
   mcp:
     name: MCP bridge
@@ -66,4 +75,20 @@ jobs:
 
       - name: Compile PRIME P6 MCP bridge
         working-directory: mcp-server
-        run: npm run build
+        run: npm test
+
+  persian-voice:
+    name: Persian native synthesis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned speech runtime
+        run: python -m pip install sherpa-onnx==1.13.8
+      - name: Verify voice pack and generate Persian audio
+        run: python scripts/verify_persian_voice.py

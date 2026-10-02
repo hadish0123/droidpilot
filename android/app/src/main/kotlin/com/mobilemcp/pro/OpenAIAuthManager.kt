@@ -66,6 +66,11 @@ class OpenAIAuthManager(private val context: Context) {
         private const val HOST_PREFS = "prime_p6_host"
         private const val HOST_ID_KEY = "ext_agent_host_id"
         private const val APP_RETURN_URI = "primep6://auth-complete"
+        // Activity and voice service share rotating credentials. Refreshing
+        // them concurrently can invalidate the token saved by the other one.
+        private val refreshMutex = Mutex()
+        @Volatile private var memoryAccessToken: String? = null
+        @Volatile private var memoryAccessTokenExpiresAtMs: Long = 0L
     }
 
     private data class AuthRecord(
@@ -81,14 +86,7 @@ class OpenAIAuthManager(private val context: Context) {
     )
 
     private val secureStore = SecureStore(context)
-    private val refreshMutex = Mutex()
     private val random = SecureRandom()
-
-    @Volatile
-    private var memoryAccessToken: String? = null
-
-    @Volatile
-    private var memoryAccessTokenExpiresAtMs: Long = 0L
 
     private fun loadRecord(): AuthRecord? {
         val raw = secureStore.getString(RECORD_KEY) ?: return null
@@ -447,47 +445,49 @@ class OpenAIAuthManager(private val context: Context) {
     }
 
     suspend fun signOut(): Boolean = withContext(Dispatchers.IO) {
-        val current = loadRecord() ?: return@withContext true
-        var remoteConfirmed = false
+        refreshMutex.withLock {
+            val current = loadRecord() ?: return@withLock true
+            var remoteConfirmed = false
 
-        try {
-            val discovery = getJsonWithRetry(DISCOVERY_ENDPOINT)
-            val revocationEndpoint = discovery.optString("revocation_endpoint")
-            val refresh = current.refreshToken
-            val clientId = current.clientId
-            if (revocationEndpoint.isNotBlank() &&
-                !refresh.isNullOrBlank() &&
-                !clientId.isNullOrBlank()
-            ) {
-                postFormWithRetry(
-                    revocationEndpoint,
-                    mapOf(
-                        "token" to refresh,
-                        "token_type_hint" to "refresh_token",
-                        "client_id" to clientId
-                    ),
-                    allowEmptyBody = true,
-                    attempts = 2
-                )
-                remoteConfirmed = true
+            try {
+                val discovery = getJsonWithRetry(DISCOVERY_ENDPOINT)
+                val revocationEndpoint = discovery.optString("revocation_endpoint")
+                val refresh = current.refreshToken
+                val clientId = current.clientId
+                if (revocationEndpoint.isNotBlank() &&
+                    !refresh.isNullOrBlank() &&
+                    !clientId.isNullOrBlank()
+                ) {
+                    postFormWithRetry(
+                        revocationEndpoint,
+                        mapOf(
+                            "token" to refresh,
+                            "token_type_hint" to "refresh_token",
+                            "client_id" to clientId
+                        ),
+                        allowEmptyBody = true,
+                        attempts = 2
+                    )
+                    remoteConfirmed = true
+                }
+            } catch (_: Exception) {
+                remoteConfirmed = false
             }
-        } catch (_: Exception) {
-            remoteConfirmed = false
-        }
 
-        memoryAccessToken = null
-        memoryAccessTokenExpiresAtMs = 0L
+            memoryAccessToken = null
+            memoryAccessTokenExpiresAtMs = 0L
 
-        saveRecord(
-            current.copy(
-                idToken = null,
-                accessToken = null,
-                refreshToken = null,
-                scopes = emptySet(),
-                expiresAtMs = 0L
+            saveRecord(
+                current.copy(
+                    idToken = null,
+                    accessToken = null,
+                    refreshToken = null,
+                    scopes = emptySet(),
+                    expiresAtMs = 0L
+                )
             )
-        )
-        remoteConfirmed
+            remoteConfirmed
+        }
     }
 
     fun openUsageSettings() {

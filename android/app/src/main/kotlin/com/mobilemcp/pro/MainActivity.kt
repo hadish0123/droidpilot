@@ -13,8 +13,6 @@ import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
@@ -22,6 +20,11 @@ import android.view.View
 import android.view.accessibility.AccessibilityManager
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.SeekBar
+import android.view.inputmethod.EditorInfo
+import com.mobilemcp.pro.voice.PersianSpeech
+import com.mobilemcp.pro.voice.PersianVoicePack
+import com.mobilemcp.pro.voice.VoicePreferences
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -41,6 +44,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -61,7 +66,9 @@ class MainActivity : AppCompatActivity() {
     private var renderedMessageCount: Int = 0
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private var textToSpeech: TextToSpeech? = null
+    private var voiceSpeech: PersianSpeech? = null
+    private var pendingSpeech: String? = null
+    private var voiceDownload: Job? = null
     private var speechRecognizer: SpeechRecognizer? = null
     private var pendingConfirmationTask: String? = null
     private var isBusy = false
@@ -92,7 +99,7 @@ class MainActivity : AppCompatActivity() {
         warmUpPrime()
 
         if (intent?.data?.scheme == "primep6") {
-            binding.tvAgentStatus.text = "Finishing ChatGPT connection…"
+            binding.tvAgentStatus.text = "در حال تکمیل اتصال ChatGPT…"
         }
     }
 
@@ -103,7 +110,7 @@ class MainActivity : AppCompatActivity() {
             intent.data?.host == "auth-complete"
         ) {
             binding.drawerLayout.closeDrawers()
-            binding.tvAgentStatus.text = "Finishing ChatGPT connection…"
+            binding.tvAgentStatus.text = "در حال تکمیل اتصال ChatGPT…"
         }
     }
 
@@ -160,13 +167,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnOverlayPermission.setOnClickListener {
             openOverlayPermission()
         }
-        binding.btnVoiceSettings.setOnClickListener {
-            try {
-                startActivity(Intent("com.android.settings.TTS_SETTINGS"))
-            } catch (_: Exception) {
-                startActivity(Intent(Settings.ACTION_SETTINGS))
-            }
-        }
+        binding.btnVoiceSettings.setOnClickListener { showVoiceSettings() }
         binding.btnAboutPrime.setOnClickListener {
             showAboutPrime()
         }
@@ -182,20 +183,18 @@ class MainActivity : AppCompatActivity() {
         binding.btnVoice.setOnClickListener { enterVoiceMode() }
         binding.btnExitVoice.setOnClickListener { exitVoiceMode() }
         binding.btnVoiceMic.setOnClickListener {
-            textToSpeech?.stop()
+            voiceSpeech?.stop()
             speechRecognizer?.cancel()
             startVoiceInput(autoSend = true)
         }
         binding.btnVoiceSend.setOnClickListener { sendVoiceMessage() }
         binding.btnPlus.setOnClickListener { showQuickActions() }
 
-        binding.etMessage.setOnEditorActionListener { _, _, _ ->
-            sendCurrentMessage()
-            true
+        binding.etMessage.setOnEditorActionListener { _, action, _ ->
+            if (action == EditorInfo.IME_ACTION_SEND) { sendCurrentMessage(); true } else false
         }
-        binding.etVoiceMessage.setOnEditorActionListener { _, _, _ ->
-            sendVoiceMessage()
-            true
+        binding.etVoiceMessage.setOnEditorActionListener { _, action, _ ->
+            if (action == EditorInfo.IME_ACTION_SEND) { sendVoiceMessage(); true } else false
         }
         binding.etMessage.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -259,7 +258,7 @@ class MainActivity : AppCompatActivity() {
                 warmUpPrime()
                 showPlanWelcomeOnce()
 
-                val label = profile.email ?: profile.name ?: "ChatGPT account"
+                val label = profile.email ?: profile.name ?: "حساب ChatGPT"
                 appendChat("PRIME", "اکانت ChatGPT وصل شد: $label", persist = false)
                 speak("اتصال انجام شد. پرایم آماده است.")
             } catch (e: Exception) {
@@ -316,7 +315,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun disconnectChatGpt() {
         if (isBusy) return
-        setBusy(true, "Signing out…")
+        stopService(Intent(this, VoiceSessionForegroundService::class.java))
+        voiceSpeech?.stop()
+        setBusy(true, "در حال قطع اتصال…")
         appScope.launch {
             val remoteConfirmed = try {
                 authManager.signOut()
@@ -400,6 +401,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun createNewChat() {
+        if (isBusy) return
         val chatId = chatStore.createChat()
         loadChat(chatId, showGreetingWhenEmpty = false)
         renderChatHistory()
@@ -410,7 +412,7 @@ class MainActivity : AppCompatActivity() {
         chatId: Long,
         showGreetingWhenEmpty: Boolean = true
     ) {
-        if (!chatStore.chatExists(chatId)) return
+        if (isBusy || !chatStore.chatExists(chatId)) return
 
         currentChatId = chatId
         getSharedPreferences(
@@ -423,7 +425,7 @@ class MainActivity : AppCompatActivity() {
         pendingConfirmationTask = null
         binding.chatMessages.removeAllViews()
         binding.etMessage.setText("")
-        binding.tvAgentStatus.text = "Ready"
+        binding.tvAgentStatus.text = "آماده"
 
         val messages = chatStore.messages(chatId)
         primeAgent.restoreConversation(
@@ -544,10 +546,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun confirmDeleteChat(chat: PrimeChatSummary) {
+        if (isBusy) return
         AlertDialog.Builder(this)
-            .setTitle("Delete chat?")
+            .setTitle("این گفت‌وگو حذف شود؟")
             .setMessage(chat.title)
-            .setPositiveButton("Delete") { _, _ ->
+            .setPositiveButton("حذف") { _, _ ->
                 val deletingCurrent = chat.id == currentChatId
                 chatStore.deleteChat(chat.id)
 
@@ -569,11 +572,12 @@ class MainActivity : AppCompatActivity() {
                     renderChatHistory()
                 }
             }
-            .setNegativeButton("Cancel", null)
+            .setNegativeButton("لغو", null)
             .show()
     }
 
     private fun confirmDeleteAllChats() {
+        if (isBusy) return
         AlertDialog.Builder(this)
             .setTitle("Delete all chats?")
             .setMessage(
@@ -588,7 +592,7 @@ class MainActivity : AppCompatActivity() {
                 )
                 binding.drawerLayout.closeDrawer(Gravity.RIGHT)
             }
-            .setNegativeButton("Cancel", null)
+            .setNegativeButton("لغو", null)
             .show()
     }
 
@@ -599,16 +603,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("Rename chat")
+            .setTitle("تغییر نام گفت‌وگو")
             .setView(input)
-            .setPositiveButton("Save") { _, _ ->
+            .setPositiveButton("ذخیره") { _, _ ->
                 chatStore.renameChat(
                     chat.id,
                     input.text?.toString().orEmpty()
                 )
                 renderChatHistory()
             }
-            .setNegativeButton("Cancel", null)
+            .setNegativeButton("لغو", null)
             .show()
     }
 
@@ -647,6 +651,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendCurrentMessage() {
+        if (VoiceSessionForegroundService.isOverlayRunning) {
+            binding.tvAgentStatus.text = "برای چت متنی، ابتدا پنجرهٔ Voice را ببند."
+            return
+        }
         val text = binding.etMessage.text?.toString()?.trim().orEmpty()
         if (text.isBlank() || isBusy) return
         binding.etMessage.setText("")
@@ -657,7 +665,7 @@ class MainActivity : AppCompatActivity() {
         val text = binding.etVoiceMessage.text?.toString()?.trim().orEmpty()
         if (text.isBlank() || isBusy) return
 
-        textToSpeech?.stop()
+        voiceSpeech?.stop()
         speechRecognizer?.cancel()
         binding.etVoiceMessage.setText("")
         handleInput(text, fromVoiceMode = true)
@@ -667,6 +675,11 @@ class MainActivity : AppCompatActivity() {
         input: String,
         fromVoiceMode: Boolean = voiceModeActive
     ) {
+        if (isBusy) return
+        if (VoiceSessionForegroundService.isOverlayRunning) {
+            binding.tvAgentStatus.text = "برای چت متنی، ابتدا پنجرهٔ Voice را ببند."
+            return
+        }
         if (fromVoiceMode) {
             binding.tvVoiceStatus.text = "You: " + input.take(120)
         } else {
@@ -687,7 +700,7 @@ class MainActivity : AppCompatActivity() {
                 isNegativeConfirmation(input) -> {
                     pendingConfirmationTask = null
                     if (fromVoiceMode) {
-                        binding.tvVoiceStatus.text = "Cancelled"
+                        binding.tvVoiceStatus.text = "لغو شد"
                         speak("لغو شد.")
                     } else {
                         appendChat("PRIME", "لغو شد.")
@@ -698,8 +711,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        setBusy(true, "P6 is working…")
-        if (fromVoiceMode) binding.tvVoiceStatus.text = "Thinking…"
+        setBusy(true, "پرایم در حال انجام درخواست است…")
+        if (fromVoiceMode) binding.tvVoiceStatus.text = "در حال آماده‌کردن پاسخ…"
 
         appScope.launch {
             try {
@@ -727,15 +740,18 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (fromVoiceMode) {
-                    binding.tvVoiceStatus.text = "PRIME is speaking…"
+                    appendChat("PRIME", outcome.text)
+                    binding.tvVoiceStatus.text = "پرایم در حال صحبت است…"
                     speak(outcome.text)
                 } else {
                     appendChat("PRIME", outcome.text)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 val message = userFriendlyError(e)
                 if (fromVoiceMode) {
-                    binding.tvVoiceStatus.text = "Connection issue • retry when ready"
+                    binding.tvVoiceStatus.text = "اتصال قطع شد · دوباره تلاش کن"
                     speak(message)
                 } else {
                     appendChat("PRIME", message, persist = false)
@@ -766,18 +782,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun isPositiveConfirmation(value: String): Boolean {
-        val v = value.trim().lowercase(Locale.getDefault())
-        return v in setOf(
-            "بله", "آره", "اره", "اوکی", "باشه", "تایید", "تأیید",
-            "انجام بده", "ارسال کن", "yes", "ok", "okay", "confirm", "do it"
-        )
-    }
-
-    private fun isNegativeConfirmation(value: String): Boolean {
-        val v = value.trim().lowercase(Locale.getDefault())
-        return v in setOf("نه", "خیر", "لغو", "بیخیال", "cancel", "no", "stop")
-    }
+    private fun isPositiveConfirmation(value: String) = PersianInput.isPositiveConfirmation(value)
+    private fun isNegativeConfirmation(value: String) = PersianInput.isNegativeConfirmation(value)
 
     private suspend fun readUiState(): String = withContext(Dispatchers.Default) {
         val service = MobileAccessibilityService.instance
@@ -940,53 +946,101 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupTextToSpeech() {
-        textToSpeech = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                textToSpeech?.setSpeechRate(1.0f)
-                textToSpeech?.setOnUtteranceProgressListener(
-                    object : UtteranceProgressListener() {
-                        override fun onStart(utteranceId: String?) = Unit
-                        override fun onError(utteranceId: String?) = Unit
+        voiceSpeech = PersianSpeech(applicationContext, object : PersianSpeech.Listener {
+            override fun onReady() {
+                pendingSpeech?.let { text -> pendingSpeech = null; voiceSpeech?.speak(text) }
+            }
+            override fun onDone() {
+                binding.tvAgentStatus.text = "صدای فارسی آماده است"
+                if (voiceModeActive && !isBusy) startVoiceInput(autoSend = true)
+            }
+            override fun onError(message: String) {
+                pendingSpeech = null
+                binding.tvAgentStatus.text = message
+            }
+        })
+    }
 
-                        override fun onDone(utteranceId: String?) {
-                            if (voiceModeActive) {
-                                runOnUiThread {
-                                    appScope.launch {
-                                        delay(350)
-                                        if (voiceModeActive && !isBusy) {
-                                            startVoiceInput(autoSend = true)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                )
+    private fun speak(text: String) {
+        speechRecognizer?.cancel()
+        pendingSpeech = text
+        voiceSpeech?.prepare()
+    }
+
+    private fun prepareVoicePack(after: () -> Unit) {
+        if (voiceDownload?.isActive == true) return
+        if (PersianVoicePack.isInstalled(this)) { after(); return }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("نصب صدای فارسی PRIME")
+            .setMessage("بستهٔ صدا یک‌بار دانلود می‌شود (۶۴ مگابایت). پس از نصب، پخش فارسی روی خود گوشی انجام می‌شود.")
+            .setNegativeButton("لغو") { _, _ -> voiceDownload?.cancel() }
+            .create()
+        dialog.setCanceledOnTouchOutside(false)
+        dialog.setOnCancelListener { voiceDownload?.cancel() }
+        dialog.show()
+        voiceDownload = appScope.launch {
+            try {
+                PersianVoicePack.ensureInstalled(applicationContext) { progress ->
+                    runOnUiThread { dialog.setMessage(progress) }
+                }
+                dialog.dismiss()
+                after()
+            } catch (e: CancellationException) {
+                dialog.dismiss()
+                throw e
+            } catch (e: Exception) {
+                dialog.dismiss()
+                AlertDialog.Builder(this@MainActivity).setTitle("دانلود صدا کامل نشد")
+                    .setMessage(e.message ?: "اتصال اینترنت را بررسی کن و دوباره تلاش کن.")
+                    .setPositiveButton("تلاش دوباره") { _, _ -> prepareVoicePack(after) }
+                    .setNegativeButton("بستن", null).show()
             }
         }
     }
 
-    private fun speak(text: String) {
-        val tts = textToSpeech ?: return
-        val language = if (text.any { it.code in 0x0600..0x06FF }) {
-            Locale("fa", "IR")
-        } else {
-            Locale.getDefault()
+    private fun showVoiceSettings() {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(12), dp(24), dp(12))
         }
-
-        val result = tts.setLanguage(language)
-        if (result == TextToSpeech.LANG_MISSING_DATA ||
-            result == TextToSpeech.LANG_NOT_SUPPORTED
-        ) {
-            tts.setLanguage(Locale.getDefault())
+        panel.addView(TextView(this).apply {
+            text = if (PersianVoicePack.isInstalled(this@MainActivity))
+                "صدای فارسی نصب است · پخش آفلاین\nتشخیص گفتار ممکن است به اینترنت نیاز داشته باشد."
+            else "صدای فارسی آمادهٔ دانلود است · ۶۴ مگابایت"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
+        })
+        val language = MaterialButton(this).apply {
+            text = "زبان ورودی: " + if (VoicePreferences.language(this@MainActivity) == "fa-IR") "فارسی" else "English"
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity).setTitle("زبان تشخیص گفتار")
+                    .setSingleChoiceItems(arrayOf("فارسی", "English"),
+                        if (VoicePreferences.language(this@MainActivity) == "fa-IR") 0 else 1) { dialog, which ->
+                        VoicePreferences.setLanguage(this@MainActivity, if (which == 0) "fa-IR" else "en-US")
+                        text = "زبان ورودی: " + if (which == 0) "فارسی" else "English"
+                        dialog.dismiss()
+                    }.show()
+            }
         }
-
-        tts.speak(
-            text.take(2500),
-            TextToSpeech.QUEUE_FLUSH,
-            null,
-            "prime-p6-" + System.currentTimeMillis()
-        )
+        panel.addView(language)
+        panel.addView(TextView(this).apply { text = "سرعت گفتار" })
+        panel.addView(SeekBar(this).apply {
+            max = 55
+            progress = ((VoicePreferences.speed(this@MainActivity) - 0.75f) * 100).toInt()
+            contentDescription = "سرعت صدای فارسی"
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar?, value: Int, user: Boolean) {
+                    if (user) VoicePreferences.setSpeed(this@MainActivity, 0.75f + value / 100f)
+                }
+                override fun onStartTrackingTouch(bar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(bar: SeekBar?) = Unit
+            })
+        })
+        AlertDialog.Builder(this).setTitle("صدای فارسی PRIME").setView(panel)
+            .setPositiveButton("آزمایش صدا") { _, _ ->
+                if (VoiceSessionForegroundService.isOverlayRunning) {
+                    binding.tvAgentStatus.text = "برای آزمایش صدا ابتدا Voice را ببند."
+                } else prepareVoicePack { speak("سلام، من پرایم هستم. صدای فارسی آماده است. چطور می‌توانم کمکت کنم؟") }
+            }.setNegativeButton("بستن", null).show()
     }
 
     private fun enterVoiceMode() {
@@ -1032,10 +1086,16 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        launchPersistentVoiceOverlay()
+        prepareVoicePack { launchPersistentVoiceOverlay() }
     }
 
     private fun launchPersistentVoiceOverlay() {
+        pendingSpeech = null
+        voiceSpeech?.stop()
+        if (!PersianVoicePack.isInstalled(this)) {
+            prepareVoicePack { launchPersistentVoiceOverlay() }
+            return
+        }
         pendingStartPersistentVoice = false
 
         if (
@@ -1070,7 +1130,7 @@ class MainActivity : AppCompatActivity() {
 
         try {
             startForegroundService(intent)
-            binding.tvAgentStatus.text = "Starting PRIME Voice…"
+            binding.tvAgentStatus.text = "شروع گفت‌وگوی صوتی…"
         } catch (t: Throwable) {
             showVoiceStartFailure(
                 t::class.java.simpleName + ": " +
@@ -1084,7 +1144,7 @@ class MainActivity : AppCompatActivity() {
 
             if (VoiceSessionForegroundService.isOverlayRunning) {
                 binding.voiceOverlay.visibility = View.GONE
-                binding.tvAgentStatus.text = "Persistent PRIME Voice active"
+                binding.tvAgentStatus.text = "گفت‌وگوی صوتی فعال است"
                 return@launch
             }
 
@@ -1112,13 +1172,7 @@ class MainActivity : AppCompatActivity() {
                     "اگر دوباره تکرار شد همین پیام را برای من بفرست."
             )
             .setPositiveButton("باشه", null)
-            .setNeutralButton("Voice settings") { _, _ ->
-                try {
-                    startActivity(Intent("com.android.settings.TTS_SETTINGS"))
-                } catch (_: Exception) {
-                    startActivity(Intent(Settings.ACTION_SETTINGS))
-                }
-            }
+            .setNeutralButton("تنظیمات صدا") { _, _ -> showVoiceSettings() }
             .show()
     }
 
@@ -1136,9 +1190,9 @@ class MainActivity : AppCompatActivity() {
 
         startService(intent)
         speechRecognizer?.cancel()
-        textToSpeech?.stop()
+        voiceSpeech?.stop()
         binding.voiceOverlay.visibility = View.GONE
-        binding.tvAgentStatus.text = "Ready"
+        binding.tvAgentStatus.text = "آماده"
     }
 
     private fun startVoiceInput(autoSend: Boolean) {
@@ -1175,12 +1229,13 @@ class MainActivity : AppCompatActivity() {
             )
             putExtra(
                 RecognizerIntent.EXTRA_LANGUAGE,
-                Locale.getDefault().toLanguageTag()
+                VoicePreferences.language(this@MainActivity)
             )
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         }
-        speechRecognizer?.startListening(intent)
+        try { speechRecognizer?.startListening(intent) }
+        catch (e: Exception) { binding.tvAgentStatus.text = "تشخیص گفتار شروع نشد؛ دوباره تلاش کن." }
     }
 
     private fun ensureVoiceForegroundService() {
@@ -1201,26 +1256,26 @@ class MainActivity : AppCompatActivity() {
         speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).also { recognizer ->
             recognizer.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
-                    binding.tvAgentStatus.text = "Listening…"
-                    if (voiceModeActive) binding.tvVoiceStatus.text = "Listening…"
+                    binding.tvAgentStatus.text = "در حال گوش دادن…"
+                    if (voiceModeActive) binding.tvVoiceStatus.text = "در حال گوش دادن…"
                 }
 
                 override fun onBeginningOfSpeech() {
-                    binding.tvAgentStatus.text = "Listening…"
+                    binding.tvAgentStatus.text = "در حال گوش دادن…"
                 }
 
                 override fun onRmsChanged(rmsdB: Float) = Unit
                 override fun onBufferReceived(buffer: ByteArray?) = Unit
 
                 override fun onEndOfSpeech() {
-                    binding.tvAgentStatus.text = "Understanding…"
-                    if (voiceModeActive) binding.tvVoiceStatus.text = "Understanding…"
+                    binding.tvAgentStatus.text = "در حال تشخیص گفتار…"
+                    if (voiceModeActive) binding.tvVoiceStatus.text = "در حال تشخیص گفتار…"
                 }
 
                 override fun onError(error: Int) {
-                    binding.tvAgentStatus.text = "Ready"
+                    binding.tvAgentStatus.text = "آماده"
                     if (voiceModeActive) {
-                        binding.tvVoiceStatus.text = "Listening…"
+                        binding.tvVoiceStatus.text = "در حال گوش دادن…"
                         appScope.launch {
                             delay(700)
                             if (voiceModeActive && !isBusy) {
@@ -1235,7 +1290,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onResults(results: Bundle?) {
-                    binding.tvAgentStatus.text = "Ready"
+                    binding.tvAgentStatus.text = "آماده"
                     val spoken = results
                         ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         ?.firstOrNull()
@@ -1328,12 +1383,10 @@ class MainActivity : AppCompatActivity() {
             text = if (isUser) message.trim() else "PRIME\n" + message.trim()
             setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
             textSize = 15f
+            setTextIsSelectable(true)
             setLineSpacing(0f, 1.2f)
             setPadding(
-                if (isUser) dp(14) else 0,
-                if (isUser) dp(10) else 0,
-                if (isUser) dp(14) else 0,
-                if (isUser) dp(10) else 0
+                dp(14), dp(12), dp(14), dp(12)
             )
             maxWidth = (resources.displayMetrics.widthPixels * 0.82f).toInt()
             if (isUser) {
@@ -1341,6 +1394,8 @@ class MainActivity : AppCompatActivity() {
                     this@MainActivity,
                     R.drawable.user_message_bg
                 )
+            } else {
+                background = ContextCompat.getDrawable(this@MainActivity, R.drawable.chat_bg)
             }
             if (message.any { it.code in 0x0600..0x06FF }) {
                 textDirection = View.TEXT_DIRECTION_RTL
@@ -1356,14 +1411,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun showQuickActions() {
         val options = arrayOf(
-            if (authManager.isSignedIn()) "ChatGPT account" else "Connect ChatGPT",
-            "Phone control",
-            "Android settings",
-            "Device Bridge"
+            if (authManager.isSignedIn()) "حساب ChatGPT" else "اتصال ChatGPT",
+            "کنترل گوشی",
+            "تنظیمات گوشی",
+            "پل اتصال دستگاه"
         )
 
         AlertDialog.Builder(this)
-            .setTitle("PRIME actions")
+            .setTitle("ابزارهای PRIME")
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> {
@@ -1391,7 +1446,9 @@ class MainActivity : AppCompatActivity() {
         binding.etVoiceMessage.isEnabled = !busy
         binding.btnSignIn.isEnabled = !busy
         binding.btnSignOut.isEnabled = !busy
-        binding.tvAgentStatus.text = status ?: if (busy) "P6 is working…" else "Ready"
+        binding.btnCreateNewChat.isEnabled = !busy
+        binding.btnDeleteAllChats.isEnabled = !busy
+        binding.tvAgentStatus.text = status ?: if (busy) "پرایم در حال انجام درخواست است…" else "آماده"
     }
 
     private fun startServer() {
@@ -1400,7 +1457,11 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val port = binding.etPort.text.toString().toIntOrNull() ?: 8765
+        val port = binding.etPort.text.toString().toIntOrNull()
+        if (port == null || port !in 1024..65535) {
+            binding.etPort.error = "پورت باید بین ۱۰۲۴ و ۶۵۵۳۵ باشد"
+            return
+        }
         try {
             wsServer = WebSocketCommandServer(
                 port = port,
@@ -1469,12 +1530,12 @@ class MainActivity : AppCompatActivity() {
             indicator.setColor(
                 ContextCompat.getColor(this, R.color.status_connected)
             )
-            binding.tvAccessibilityStatus.text = "ON"
+            binding.tvAccessibilityStatus.text = "فعال"
         } else {
             indicator.setColor(
                 ContextCompat.getColor(this, R.color.status_disconnected)
             )
-            binding.tvAccessibilityStatus.text = "OFF"
+            binding.tvAccessibilityStatus.text = "غیرفعال"
         }
     }
 
@@ -1543,10 +1604,11 @@ class MainActivity : AppCompatActivity() {
         voiceModeActive = false
         speechRecognizer?.destroy()
         speechRecognizer = null
-        textToSpeech?.stop()
-        textToSpeech?.shutdown()
-        textToSpeech = null
+        voiceSpeech?.stop()
+        voiceSpeech?.close()
+        voiceSpeech = null
         appScope.cancel()
+        chatStore.close()
         super.onDestroy()
     }
 }
