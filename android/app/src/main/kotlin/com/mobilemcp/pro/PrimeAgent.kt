@@ -6,7 +6,9 @@ import com.mobilemcp.pro.ai.AiProvider
 import com.mobilemcp.pro.ai.AiTextRequest
 import com.mobilemcp.pro.ai.OpenAIResponsesProvider
 import com.mobilemcp.pro.context.ConversationContext
+import com.mobilemcp.pro.tool.LambdaToolRuntime
 import com.mobilemcp.pro.tool.PrimeToolRegistry
+import com.mobilemcp.pro.tool.ToolRuntime
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
@@ -171,6 +173,23 @@ Never wrap JSON in markdown fences.
         actionRunner: suspend (String, JSONObject) -> PrimeActionResult,
         onProgress: (String) -> Unit,
         onTextDelta: ((String) -> Unit)? = null
+    ): PrimeOutcome = runWithRuntime(
+        userText = userText,
+        confirmedForTask = confirmedForTask,
+        toolRuntime = LambdaToolRuntime(
+            contextReader = { uiProvider() },
+            executor = actionRunner
+        ),
+        onProgress = onProgress,
+        onTextDelta = onTextDelta
+    )
+
+    internal suspend fun runWithRuntime(
+        userText: String,
+        confirmedForTask: Boolean,
+        toolRuntime: ToolRuntime,
+        onProgress: (String) -> Unit,
+        onTextDelta: ((String) -> Unit)? = null
     ): PrimeOutcome {
         // Local commands remain executable on every turn, independently of
         // model replies, network quota or conversation history.
@@ -178,7 +197,7 @@ Never wrap JSON in markdown fences.
             coroutineContext.ensureActive()
             phoneContext = true
             onProgress("در حال اجرای فرمان گوشی…")
-            val result = runLocalAction("press_key", JSONObject().put("key", key), actionRunner)
+            val result = runLocalAction("press_key", JSONObject().put("key", key), toolRuntime)
             val reply = if (result.success) when (key) {
                 "back" -> "به صفحهٔ قبلی برگشتم."
                 "home" -> "صفحهٔ اصلی را باز کردم."
@@ -194,7 +213,7 @@ Never wrap JSON in markdown fences.
             onProgress("در حال باز کردن $appName…")
             val result = runLocalAction(
                 "open_app",
-                JSONObject().put("name", appName), actionRunner
+                JSONObject().put("name", appName), toolRuntime
             )
             val reply = result.summary.ifBlank {
                 if (result.success) "درخواست باز کردن $appName اجرا شد." else "باز کردن $appName انجام نشد."
@@ -229,7 +248,7 @@ Never wrap JSON in markdown fences.
         repeat(MAX_AGENT_STEPS) { step ->
             coroutineContext.ensureActive()
             val uiState = try {
-                uiProvider().take(MAX_UI_CHARS)
+                toolRuntime.readContext(userText).take(MAX_UI_CHARS)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -322,7 +341,7 @@ Never wrap JSON in markdown fences.
 
                     coroutineContext.ensureActive()
                     val result = try {
-                        actionRunner(command, params)
+                        toolRuntime.execute(command, params)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -352,11 +371,17 @@ Never wrap JSON in markdown fences.
         return PrimeOutcome(text)
     }
 
-    private suspend fun runLocalAction(command: String, params: JSONObject,
-        runner: suspend (String, JSONObject) -> PrimeActionResult): PrimeActionResult = try {
-        runner(command, params)
-    } catch (e: CancellationException) { throw e }
-    catch (e: Exception) { PrimeActionResult(false, e.message ?: "اجرای فرمان گوشی انجام نشد.") }
+    private suspend fun runLocalAction(
+        command: String,
+        params: JSONObject,
+        toolRuntime: ToolRuntime
+    ): PrimeActionResult = try {
+        toolRuntime.execute(command, params)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        PrimeActionResult(false, e.message ?: "اجرای فرمان گوشی انجام نشد.")
+    }
 
     private fun remember(user: String, assistant: String) {
         conversationContext.remember(user, assistant)
