@@ -619,14 +619,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
         voiceModeActive = true
-        try {
-            startForegroundService(
-                Intent(this, VoiceSessionForegroundService::class.java)
-            )
-        } catch (_: Exception) {
-            // Voice still works while PRIME is foreground; Android may reject
-            // the cross-app microphone foreground service on some devices.
-        }
         binding.voiceOverlay.visibility = View.VISIBLE
         binding.tvVoiceStatus.text = "Listening…"
         startVoiceInput(autoSend = true)
@@ -664,6 +656,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         voiceAutoSend = autoSend
+        if (voiceModeActive && autoSend) {
+            ensureVoiceForegroundService()
+        }
         ensureSpeechRecognizer()
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -679,6 +674,18 @@ class MainActivity : AppCompatActivity() {
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         }
         speechRecognizer?.startListening(intent)
+    }
+
+    private fun ensureVoiceForegroundService() {
+        try {
+            startForegroundService(
+                Intent(this, VoiceSessionForegroundService::class.java)
+            )
+        } catch (_: Exception) {
+            // PRIME can still listen while it is foreground. Some Android
+            // builds may block microphone FGS until all device permissions
+            // are fully granted.
+        }
     }
 
     private fun ensureSpeechRecognizer() {
