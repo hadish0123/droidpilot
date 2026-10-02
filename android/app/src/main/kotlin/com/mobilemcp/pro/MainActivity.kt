@@ -245,11 +245,11 @@ class MainActivity : AppCompatActivity() {
                 showPlanWelcomeOnce()
 
                 val label = profile.email ?: profile.name ?: "ChatGPT account"
-                appendChat("PRIME", "اکانت ChatGPT وصل شد: $label")
+                appendChat("PRIME", "اکانت ChatGPT وصل شد: $label", persist = false)
                 speak("اتصال انجام شد. پرایم آماده است.")
             } catch (e: Exception) {
                 val message = authFriendlyError(e)
-                appendChat("PRIME", message)
+                appendChat("PRIME", message, persist = false)
             } finally {
                 setBusy(false)
             }
@@ -288,10 +288,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 appendChat(
                     "PRIME",
-                    "اتصال شبکه PRIME به OpenAI سالم است.\n$authResult\n$apiResult"
+                    "اتصال شبکه PRIME به OpenAI سالم است.\n$authResult\n$apiResult",
+                    persist = false
                 )
             } catch (e: Exception) {
-                appendChat("PRIME", authFriendlyError(e))
+                appendChat("PRIME", authFriendlyError(e), persist = false)
             } finally {
                 setBusy(false)
             }
@@ -313,7 +314,8 @@ class MainActivity : AppCompatActivity() {
             appendChat(
                 "PRIME",
                 if (remoteConfirmed) "اتصال ChatGPT قطع شد."
-                else "ورود محلی پاک شد. برای قطع کامل دسترسی می‌توانی از تنظیمات ChatGPT هم PRIME را Disconnect کنی."
+                else "ورود محلی پاک شد. برای قطع کامل دسترسی می‌توانی از تنظیمات ChatGPT هم PRIME را Disconnect کنی.",
+                persist = false
             )
             setBusy(false)
         }
@@ -714,7 +716,7 @@ class MainActivity : AppCompatActivity() {
                     binding.tvVoiceStatus.text = "Connection issue • retry when ready"
                     speak(message)
                 } else {
-                    appendChat("PRIME", message)
+                    appendChat("PRIME", message, persist = false)
                 }
             } finally {
                 setBusy(false)
@@ -967,7 +969,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun enterVoiceMode() {
         if (!authManager.isSignedIn()) {
-            appendChat("PRIME", "اول ChatGPT را از منوی کناری وصل کن.")
+            appendChat("PRIME", "اول ChatGPT را از منوی کناری وصل کن.", persist = false)
             binding.drawerLayout.openDrawer(Gravity.RIGHT)
             return
         }
@@ -1061,7 +1063,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            appendChat("PRIME", "تشخیص صدا روی این گوشی در دسترس نیست.")
+            appendChat("PRIME", "تشخیص صدا روی این گوشی در دسترس نیست.", persist = false)
             if (voiceModeActive) binding.tvVoiceStatus.text = "Speech recognition unavailable"
             return
         }
@@ -1134,7 +1136,7 @@ class MainActivity : AppCompatActivity() {
                     } else if (error != SpeechRecognizer.ERROR_NO_MATCH &&
                         error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
                     ) {
-                        appendChat("PRIME", "صدای واضحی دریافت نشد. دوباره امتحان کن.")
+                        appendChat("PRIME", "صدای واضحی دریافت نشد. دوباره امتحان کن.", persist = false)
                     }
                 }
 
