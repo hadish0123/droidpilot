@@ -117,6 +117,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnSignIn.setOnClickListener { connectChatGpt() }
         binding.btnSignOut.setOnClickListener { disconnectChatGpt() }
         binding.btnUsage.setOnClickListener { authManager.openUsageSettings() }
+        binding.btnTestOpenAi.setOnClickListener { testOpenAiConnection() }
 
         binding.btnSend.setOnClickListener { sendCurrentMessage() }
         binding.btnMic.setOnClickListener { startVoiceInput(autoSend = false) }
@@ -156,6 +157,11 @@ class MainActivity : AppCompatActivity() {
 
         appScope.launch {
             try {
+                binding.tvAgentStatus.text = "Checking OpenAI connection…"
+                withContext(Dispatchers.IO) {
+                    authManager.testOpenAiConnection()
+                }
+
                 val profile = authManager.signIn(
                     openBrowser = { uri ->
                         startActivity(Intent(Intent.ACTION_VIEW, uri))
@@ -193,6 +199,23 @@ class MainActivity : AppCompatActivity() {
                 "کد ورود منقضی شد. یک بار دیگر Continue with ChatGPT را بزن؛ ثبت PRIME حفظ شده و دوباره از صفر ساخته نمی‌شود."
             message.isNotBlank() -> "اتصال ChatGPT کامل نشد: $message"
             else -> "اتصال ChatGPT کامل نشد."
+        }
+    }
+
+    private fun testOpenAiConnection() {
+        if (isBusy) return
+        setBusy(true, "Testing OpenAI connection…")
+        appScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    authManager.testOpenAiConnection()
+                }
+                appendChat("PRIME", "اتصال شبکه PRIME به OpenAI سالم است.\n$result")
+            } catch (e: Exception) {
+                appendChat("PRIME", authFriendlyError(e))
+            } finally {
+                setBusy(false)
+            }
         }
     }
 
