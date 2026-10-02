@@ -47,4 +47,12 @@
     <string name="ui_delete_chats">حذف همهٔ گفت‌وگوها</string>
     <string name="ui_bridge_advanced">پل اتصال دستگاه · پیشرفته</string>
     <string name="ui_about">دربارهٔ PRIME P6</string>
+    <string name="voice_close">بستن گفت‌وگوی صوتی</string>
+    <string name="voice_persistent_context">گفت‌وگوی پیوسته · P6</string>
+    <string name="voice_minimize">کوچک یا بزرگ کردن پنجرهٔ صدا</string>
+    <string name="voice_preparing">آماده‌سازی صدای فارسی…</string>
+    <string name="voice_greeting">سلام، من PRIME هستم. دستور یا پرسشت را بگو.</string>
+    <string name="voice_overlay_hint">برای قطع صدا و گفتن دستور بعدی، میکروفن را بزن. با دکمهٔ − پنجره را کوچک کن.</string>
+    <string name="voice_overlay_input">دستور بعدی را بنویس یا بگو…</string>
+    <string name="voice_send">ارسال دستور</string>
 </resources>

@@ -27,7 +27,8 @@ object SafeVoiceArchive {
                 if (entry.isDirectory) {
                     require(target.isDirectory || target.mkdirs()) { "Cannot create voice directory" }
                 } else {
-                    target.parentFile.mkdirs()
+                    val parent = requireNotNull(target.parentFile) { "Invalid voice directory" }
+                    require(parent.isDirectory || parent.mkdirs()) { "Cannot create voice directory" }
                     target.outputStream().use { output ->
                         val buffer = ByteArray(65536)
                         var written = 0L

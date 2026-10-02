@@ -87,7 +87,6 @@ class WebSocketCommandServer(
                 val json = gson.toJson(finalResponse)
                 conn.send(json)
 
-                val preview = if (json.length > 200) json.take(200) + "..." else json
                 onLog("<< ${request.command}: ${if (finalResponse.success) "OK" else "ERR"}")
 
             } catch (e: JsonSyntaxException) {

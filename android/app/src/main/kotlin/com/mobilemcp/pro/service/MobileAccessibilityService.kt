@@ -392,11 +392,13 @@ class MobileAccessibilityService : AccessibilityService() {
     }
 
     private fun executeClickElement(params: JsonObject?): CommandResponse {
-        val root = targetRootInActiveWindow() ?: return CommandResponse.error(null, "No active window")
-
         val text = params?.get("text")?.asString
         val id = params?.get("id")?.asString
         val contentDesc = params?.get("contentDescription")?.asString
+        if (listOf(text, id, contentDesc).all { it.isNullOrBlank() }) {
+            return CommandResponse.error(null, "Provide text, id or contentDescription to select an element")
+        }
+        val root = targetRootInActiveWindow() ?: return CommandResponse.error(null, "No active window")
 
         val node = findFirstElement(root, text, id, null, contentDesc)
         root.recycle()
@@ -433,11 +435,14 @@ class MobileAccessibilityService : AccessibilityService() {
         val id = params?.get("id")?.asString
         val className = params?.get("className")?.asString
         val contentDesc = params?.get("contentDescription")?.asString
-        val timeoutMs = params?.get("timeout")?.asLong ?: 10000L
+        if (listOf(text, id, className, contentDesc).all { it.isNullOrBlank() }) {
+            return CommandResponse.error(null, "Provide an element selector")
+        }
+        val timeoutMs = (params?.get("timeout")?.asLong ?: 10000L).coerceIn(1L, 30000L)
         val pollIntervalMs = 500L
 
-        val startTime = System.currentTimeMillis()
-        while (System.currentTimeMillis() - startTime < timeoutMs) {
+        val startTime = android.os.SystemClock.elapsedRealtime()
+        while (android.os.SystemClock.elapsedRealtime() - startTime < timeoutMs) {
             val root = targetRootInActiveWindow()
             if (root != null) {
                 val node = findFirstElement(root, text, id, className, contentDesc)
@@ -448,12 +453,13 @@ class MobileAccessibilityService : AccessibilityService() {
                     return CommandResponse.success(null, JsonObject().apply {
                         add("element", gson.toJsonTree(uiNode))
                         addProperty("found", true)
-                        addProperty("elapsed_ms", System.currentTimeMillis() - startTime)
+                        addProperty("elapsed_ms", android.os.SystemClock.elapsedRealtime() - startTime)
                     })
                 }
                 root.recycle()
             }
-            Thread.sleep(pollIntervalMs)
+            val remaining = timeoutMs - (android.os.SystemClock.elapsedRealtime() - startTime)
+            if (remaining > 0) Thread.sleep(minOf(pollIntervalMs, remaining))
         }
 
         return CommandResponse.success(null, JsonObject().apply {
@@ -488,8 +494,6 @@ class MobileAccessibilityService : AccessibilityService() {
     }
 
     private fun executeGetNotifications(): CommandResponse {
-        // Use the accessibility events - we have access through service info
-        val root = targetRootInActiveWindow()
         // Trigger notifications panel
         performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
         Thread.sleep(500)
