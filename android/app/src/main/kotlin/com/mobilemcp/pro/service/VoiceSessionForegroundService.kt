@@ -29,11 +29,11 @@ import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.TextView
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import com.google.android.material.button.MaterialButton
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.mobilemcp.pro.MainActivity
@@ -99,8 +99,8 @@ class VoiceSessionForegroundService : Service() {
     private var tvStatus: TextView? = null
     private var tvContext: TextView? = null
     private var editMessage: EditText? = null
-    private var btnMic: MaterialButton? = null
-    private var btnSend: MaterialButton? = null
+    private var btnMic: ImageButton? = null
+    private var btnSend: ImageButton? = null
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
@@ -301,7 +301,7 @@ class VoiceSessionForegroundService : Service() {
         btnMic = view.findViewById(R.id.btnOverlayMic)
         btnSend = view.findViewById(R.id.btnOverlaySend)
 
-        view.findViewById<MaterialButton>(R.id.btnOverlayClose)
+        view.findViewById<ImageButton>(R.id.btnOverlayClose)
             .setOnClickListener {
                 stopPersistentVoice()
             }
