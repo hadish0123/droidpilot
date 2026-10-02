@@ -76,3 +76,19 @@ jobs:
       - name: Compile PRIME P6 MCP bridge
         working-directory: mcp-server
         run: npm test
+
+  persian-voice:
+    name: Persian native synthesis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned speech runtime
+        run: python -m pip install sherpa-onnx==1.13.8
+      - name: Verify voice pack and generate Persian audio
+        run: python scripts/verify_persian_voice.py

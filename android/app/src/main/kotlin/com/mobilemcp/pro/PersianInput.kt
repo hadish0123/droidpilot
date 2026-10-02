@@ -38,6 +38,8 @@ object PersianInput {
             "تماس بگیر", "زنگ بزن", "فعال کن", "خاموش کن", "روشن کن", "سرچ", "جستجو", "search", "open ", "launch ", "click ", "tap ")
         if (device.any { value.contains(it) } && action.any { value.contains(it) }) return true
         if (value in setOf("برگرد", "برو خانه", "برو عقب", "back", "go home", "home", "recents")) return true
+        if (listOf("تایپ کن ", "کلیک کن ", "اسکرول ", "tap ", "click ", "scroll ", "type ")
+                .any { value.startsWith(it) }) return true
         return phoneContext && listOf("بنویس", "پاک کن", "بفرست", "حذف", "ارسال", "کلیک", "اسکرول", "type ", "send ", "scroll ", "tap ")
             .any { value.startsWith(it) || value.startsWith("حالا $it") }
     }

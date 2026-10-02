@@ -16,6 +16,7 @@ object SafeVoiceArchive {
                 checkCancelled()
                 val entry = tar.nextTarEntry ?: break
                 require(++entries <= 2000) { "Voice archive has too many files" }
+                require(!entry.isSymbolicLink && !entry.isLink) { "Links are not allowed in voice archives" }
                 require(entry.isFile || entry.isDirectory) { "Unsupported voice archive entry" }
                 require(!File(entry.name).isAbsolute && '\\' !in entry.name) { "Invalid voice archive path" }
                 val target = File(root, entry.name).canonicalFile

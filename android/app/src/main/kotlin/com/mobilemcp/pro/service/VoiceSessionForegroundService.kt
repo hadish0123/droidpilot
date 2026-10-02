@@ -112,6 +112,7 @@ class VoiceSessionForegroundService : Service() {
     private var speechRecognizer: SpeechRecognizer? = null
     private var voiceSpeech: PersianSpeech? = null
     private var ttsReady = false
+    private var voiceFailed = false
     private var ttsSpeaking = false
     private val speechQueue = ArrayDeque<String>()
     private val replyBuffer = StringBuilder()
@@ -322,10 +323,9 @@ class VoiceSessionForegroundService : Service() {
         val view = LayoutInflater.from(this)
             .inflate(R.layout.overlay_voice_session, null, false)
 
-        // Keep PRIME's own overlay out of the Accessibility tree used to drive
-        // the underlying application.
-        view.importantForAccessibility =
-            View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        // The action engine filters PRIME by package. Keep overlay controls
+        // available to users of Android accessibility tools.
+        view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
 
         tvStatus = view.findViewById(R.id.tvOverlayVoiceStatus)
         tvContext = view.findViewById(R.id.tvOverlayContext)
@@ -388,7 +388,6 @@ class VoiceSessionForegroundService : Service() {
             type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
             PixelFormat.TRANSLUCENT
         ).apply {
@@ -411,8 +410,8 @@ class VoiceSessionForegroundService : Service() {
             )
         }
 
-        updateStatus("Listening…")
-        updateContext("Persistent voice • P6 • apps stay underneath")
+        updateStatus("در حال گوش دادن…")
+        updateContext("صدای فارسی آفلاین · P6")
     }
 
     private fun setOverlayFocusable(focusable: Boolean) {
@@ -487,6 +486,7 @@ class VoiceSessionForegroundService : Service() {
     private fun setupTextToSpeech() {
         voiceSpeech = PersianSpeech(applicationContext, object : PersianSpeech.Listener {
             override fun onReady() {
+                voiceFailed = false
                 ttsReady = true
                 updateStatus("صدای فارسی آماده است")
                 pumpSpeechQueue()
@@ -497,6 +497,7 @@ class VoiceSessionForegroundService : Service() {
                 pumpSpeechQueue()
             }
             override fun onError(message: String) {
+                if (!ttsReady) voiceFailed = true
                 onSpeechError(message)
             }
         }).also { it.prepare() }
@@ -569,8 +570,14 @@ class VoiceSessionForegroundService : Service() {
 
         speechQueue.addAll(SpeechText.chunks(clean))
 
+        if (!ttsReady && voiceFailed) {
+            speechQueue.clear()
+            updateStatus("صدا آماده نیست · پاسخ متنی روی صفحه است")
+            if (!isBusy && !overlayFocusable) startListening()
+            return
+        }
         if (!ttsReady) {
-            updateStatus("Preparing PRIME voice…")
+            updateStatus("آماده‌سازی صدای فارسی…")
             return
         }
 
@@ -594,7 +601,7 @@ class VoiceSessionForegroundService : Service() {
         val tts = voiceSpeech
         if (tts == null) {
             ttsReady = false
-            updateStatus("Voice output unavailable")
+            updateStatus("صدای فارسی در دسترس نیست")
             if (sessionActive && !isBusy) startListening()
             return
         }
@@ -614,21 +621,17 @@ class VoiceSessionForegroundService : Service() {
         speechQueue.clear()
         abandonSpeechAudioFocus()
 
-        if (speechQueue.isNotEmpty()) {
-            pumpSpeechQueue()
-        } else {
-            updateStatus(
-                "پخش صدا ناموفق بود · $reason"
-            )
-            if (sessionActive && !isBusy && !overlayFocusable) {
-                scope.launch {
-                    delay(500)
-                    startListening()
-                }
+        if (!ttsReady) tvReply?.text = "صدای فارسی آماده نشد: $reason\nمی‌توانی دستور را بنویسی یا پنجره را ببندی و دوباره تلاش کنی."
+        updateStatus(
+            "پخش صدا ناموفق بود · $reason"
+        )
+        if (sessionActive && !isBusy && !overlayFocusable) {
+            scope.launch {
+                delay(500)
+                startListening()
             }
         }
     }
-
     private fun speak(text: String) {
         enqueueSpeech(text, flush = false)
     }
@@ -653,12 +656,12 @@ class VoiceSessionForegroundService : Service() {
                 Manifest.permission.RECORD_AUDIO
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            updateStatus("Microphone permission is required")
+            updateStatus("دسترسی میکروفن لازم است")
             return false
         }
 
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            updateStatus("Speech recognition is unavailable on this phone")
+            updateStatus("تشخیص گفتار روی این گوشی در دسترس نیست")
             return false
         }
 
@@ -671,18 +674,18 @@ class VoiceSessionForegroundService : Service() {
                 recognizer.setRecognitionListener(
                     object : RecognitionListener {
                         override fun onReadyForSpeech(params: Bundle?) {
-                            updateStatus("Listening…")
+                            updateStatus("در حال گوش دادن…")
                         }
 
                         override fun onBeginningOfSpeech() {
-                            updateStatus("Listening…")
+                            updateStatus("در حال گوش دادن…")
                         }
 
                         override fun onRmsChanged(rmsdB: Float) = Unit
                         override fun onBufferReceived(buffer: ByteArray?) = Unit
 
                         override fun onEndOfSpeech() {
-                            updateStatus("Understanding…")
+                            updateStatus("در حال تشخیص گفتار…")
                         }
 
                         override fun onError(error: Int) {
@@ -691,8 +694,7 @@ class VoiceSessionForegroundService : Service() {
 
                             when (error) {
                                 SpeechRecognizer.ERROR_NO_MATCH,
-                                SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
-                                SpeechRecognizer.ERROR_CLIENT -> {
+                                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
                                     scope.launch {
                                         delay(600)
                                         if (
@@ -705,8 +707,9 @@ class VoiceSessionForegroundService : Service() {
                                     }
                                 }
 
+                                SpeechRecognizer.ERROR_CLIENT -> Unit
                                 else -> {
-                                    updateStatus("Voice paused • tap the mic to retry")
+                                    updateStatus("صدا متوقف است · برای ادامه میکروفن را بزن")
                                 }
                             }
                         }
@@ -749,7 +752,7 @@ class VoiceSessionForegroundService : Service() {
             lastStartError =
                 "SpeechRecognizer: " +
                     (t.message ?: t::class.java.simpleName)
-            updateStatus("Voice input failed • tap mic to retry")
+            updateStatus("ورودی صوتی آماده نشد · میکروفن را بزن")
             null
         }
 
@@ -770,13 +773,6 @@ class VoiceSessionForegroundService : Service() {
         }
 
         if (!ensureSpeechRecognizer()) return
-
-        try {
-            listening = false
-            speechRecognizer?.cancel()
-        } catch (_: Exception) {
-            // Reset best effort.
-        }
 
         val intent = Intent(
             RecognizerIntent.ACTION_RECOGNIZE_SPEECH
@@ -801,7 +797,7 @@ class VoiceSessionForegroundService : Service() {
             lastStartError =
                 "Speech start: " +
                     (t.message ?: t::class.java.simpleName)
-            updateStatus("Voice paused • tap the mic to retry")
+            updateStatus("صدا متوقف است · برای ادامه میکروفن را بزن")
         }
     }
 
@@ -842,7 +838,7 @@ class VoiceSessionForegroundService : Service() {
 
                 isNegativeConfirmation(input) -> {
                     pendingConfirmationTask = null
-                    updateStatus("Cancelled")
+                    updateStatus("لغو شد")
                     speak("لغو شد.")
                     return
                 }
@@ -856,7 +852,7 @@ class VoiceSessionForegroundService : Service() {
         isBusy = true
         resetStreamSpeech()
         setControlsEnabled(false)
-        updateStatus("Thinking…")
+        updateStatus("در حال آماده‌کردن پاسخ…")
 
         agentJob = scope.launch {
             try {
@@ -906,7 +902,7 @@ class VoiceSessionForegroundService : Service() {
                 ttsSpeaking = false
                 speechQueue.clear()
                 tvReply?.text = message
-                updateStatus("Connection issue")
+                updateStatus("خطای اتصال")
                 enqueueSpeech(message, flush = false)
             }
         }
@@ -1207,7 +1203,7 @@ class VoiceSessionForegroundService : Service() {
                     Intent.FLAG_ACTIVITY_NEW_TASK
                 )
             )
-            updateContext("Persistent voice • browser")
+            updateContext("صدای فارسی · مرورگر")
             PrimeActionResult(true, "Opened $raw")
         } catch (e: Exception) {
             PrimeActionResult(
@@ -1358,6 +1354,7 @@ class VoiceSessionForegroundService : Service() {
         overlayView = null
         overlayParams = null
         scope.cancel()
+        if (::chatStore.isInitialized) chatStore.close()
 
         super.onDestroy()
     }

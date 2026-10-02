@@ -445,47 +445,49 @@ class OpenAIAuthManager(private val context: Context) {
     }
 
     suspend fun signOut(): Boolean = withContext(Dispatchers.IO) {
-        val current = loadRecord() ?: return@withContext true
-        var remoteConfirmed = false
+        refreshMutex.withLock {
+            val current = loadRecord() ?: return@withLock true
+            var remoteConfirmed = false
 
-        try {
-            val discovery = getJsonWithRetry(DISCOVERY_ENDPOINT)
-            val revocationEndpoint = discovery.optString("revocation_endpoint")
-            val refresh = current.refreshToken
-            val clientId = current.clientId
-            if (revocationEndpoint.isNotBlank() &&
-                !refresh.isNullOrBlank() &&
-                !clientId.isNullOrBlank()
-            ) {
-                postFormWithRetry(
-                    revocationEndpoint,
-                    mapOf(
-                        "token" to refresh,
-                        "token_type_hint" to "refresh_token",
-                        "client_id" to clientId
-                    ),
-                    allowEmptyBody = true,
-                    attempts = 2
-                )
-                remoteConfirmed = true
+            try {
+                val discovery = getJsonWithRetry(DISCOVERY_ENDPOINT)
+                val revocationEndpoint = discovery.optString("revocation_endpoint")
+                val refresh = current.refreshToken
+                val clientId = current.clientId
+                if (revocationEndpoint.isNotBlank() &&
+                    !refresh.isNullOrBlank() &&
+                    !clientId.isNullOrBlank()
+                ) {
+                    postFormWithRetry(
+                        revocationEndpoint,
+                        mapOf(
+                            "token" to refresh,
+                            "token_type_hint" to "refresh_token",
+                            "client_id" to clientId
+                        ),
+                        allowEmptyBody = true,
+                        attempts = 2
+                    )
+                    remoteConfirmed = true
+                }
+            } catch (_: Exception) {
+                remoteConfirmed = false
             }
-        } catch (_: Exception) {
-            remoteConfirmed = false
-        }
 
-        memoryAccessToken = null
-        memoryAccessTokenExpiresAtMs = 0L
+            memoryAccessToken = null
+            memoryAccessTokenExpiresAtMs = 0L
 
-        saveRecord(
-            current.copy(
-                idToken = null,
-                accessToken = null,
-                refreshToken = null,
-                scopes = emptySet(),
-                expiresAtMs = 0L
+            saveRecord(
+                current.copy(
+                    idToken = null,
+                    accessToken = null,
+                    refreshToken = null,
+                    scopes = emptySet(),
+                    expiresAtMs = 0L
+                )
             )
-        )
-        remoteConfirmed
+            remoteConfirmed
+        }
     }
 
     fun openUsageSettings() {
