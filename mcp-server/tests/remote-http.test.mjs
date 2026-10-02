@@ -85,4 +85,48 @@ test("remote MCP registers a private device and accepts its signed MCP URL", asy
   assert.equal(initialized.jsonrpc, "2.0");
   assert.equal(initialized.id, 1);
   assert.equal(initialized.result.serverInfo.name, "prime-p6-remote");
+
+  const legacyInitialize = await fetch(base + "/mcp", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "accept": "application/json, text/event-stream",
+      "authorization": "Bearer legacy-test-bearer-that-is-long-enough-1234567890",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "uploaded-plugin-test", version: "1.0.0" },
+      },
+    }),
+  });
+  assert.equal(legacyInitialize.status, 200, "legacy uploaded-plugin endpoint");
+  const legacyInitialized = await legacyInitialize.json();
+  assert.equal(legacyInitialized.result.serverInfo.name, "prime-p6-remote");
+
+  const legacyStatus = await fetch(base + "/mcp", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "accept": "application/json, text/event-stream",
+      "authorization": "Bearer legacy-test-bearer-that-is-long-enough-1234567890",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "get_phone_status", arguments: {} },
+    }),
+  });
+  assert.equal(legacyStatus.status, 200);
+  const legacyStatusBody = await legacyStatus.json();
+  assert.equal(legacyStatusBody.result.isError ?? false, false);
+  assert.match(
+    legacyStatusBody.result.content[0].text,
+    /"connected":false/
+  );
 });
