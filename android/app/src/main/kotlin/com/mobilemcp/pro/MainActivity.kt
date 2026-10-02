@@ -123,7 +123,15 @@ class MainActivity : AppCompatActivity() {
             ) == PackageManager.PERMISSION_GRANTED
         ) {
             pendingStartPersistentVoice = false
-            launchPersistentVoiceOverlay()
+
+            // Samsung/Android 14 can briefly report the Activity resumed while
+            // the special-permission screen is still transitioning away.
+            // Start the microphone FGS only after the PRIME window is stably
+            // visible again.
+            binding.root.postDelayed(
+                { launchPersistentVoiceOverlay() },
+                650L
+            )
         }
     }
 
@@ -1029,7 +1037,29 @@ class MainActivity : AppCompatActivity() {
 
     private fun launchPersistentVoiceOverlay() {
         pendingStartPersistentVoice = false
-        binding.voiceOverlay.visibility = View.GONE
+
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            appendChat(
+                "PRIME",
+                "برای Voice Mode دسترسی میکروفن لازم است.",
+                persist = false
+            )
+            return
+        }
+
+        if (!Settings.canDrawOverlays(this)) {
+            appendChat(
+                "PRIME",
+                "برای Voice Mode اجازه Display over other apps لازم است.",
+                persist = false
+            )
+            return
+        }
 
         val intent = Intent(
             this,
@@ -1038,8 +1068,58 @@ class MainActivity : AppCompatActivity() {
             action = VoiceSessionForegroundService.ACTION_START
         }
 
-        startForegroundService(intent)
-        binding.tvAgentStatus.text = "Persistent PRIME Voice active"
+        try {
+            startForegroundService(intent)
+            binding.tvAgentStatus.text = "Starting PRIME Voice…"
+        } catch (t: Throwable) {
+            showVoiceStartFailure(
+                t::class.java.simpleName + ": " +
+                    (t.message ?: "Voice service could not start")
+            )
+            return
+        }
+
+        appScope.launch {
+            delay(1_200)
+
+            if (VoiceSessionForegroundService.isOverlayRunning) {
+                binding.voiceOverlay.visibility = View.GONE
+                binding.tvAgentStatus.text = "Persistent PRIME Voice active"
+                return@launch
+            }
+
+            val error = VoiceSessionForegroundService.lastStartError
+                ?: getSharedPreferences(
+                    "prime_voice_diagnostics",
+                    Context.MODE_PRIVATE
+                ).getString("last_error", null)
+
+            showVoiceStartFailure(
+                error ?: "PRIME Voice service stopped before the overlay opened."
+            )
+        }
+    }
+
+    private fun showVoiceStartFailure(details: String) {
+        binding.tvAgentStatus.text = "Voice could not start"
+
+        AlertDialog.Builder(this)
+            .setTitle("PRIME Voice اجرا نشد")
+            .setMessage(
+                "PRIME بسته نمی‌شود؛ Voice Service روی این گوشی شروع نشده است.\n\n" +
+                    "جزئیات: " + details.take(500) + "\n\n" +
+                    "دسترسی Microphone و Display over other apps را روشن نگه دار. " +
+                    "اگر دوباره تکرار شد همین پیام را برای من بفرست."
+            )
+            .setPositiveButton("باشه", null)
+            .setNeutralButton("Voice settings") { _, _ ->
+                try {
+                    startActivity(Intent("com.android.settings.TTS_SETTINGS"))
+                } catch (_: Exception) {
+                    startActivity(Intent(Settings.ACTION_SETTINGS))
+                }
+            }
+            .show()
     }
 
     private fun exitVoiceMode() {
