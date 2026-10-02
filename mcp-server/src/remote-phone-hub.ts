@@ -19,8 +19,24 @@ export class RemotePhoneHub {
   private pending = new Map<string, PendingRequest>();
   private counter = 0;
 
+  private resolveIdentity(identity: string): string | null {
+    const exact = this.sockets.get(identity);
+    if (exact?.readyState === WebSocket.OPEN) return identity;
+
+    // Compatibility path for the user's private uploaded plugin. It is only
+    // allowed when exactly one PRIME phone is online, so it cannot select a
+    // different device in a multi-device setup.
+    if (identity === "legacy") {
+      const online = [...this.sockets.entries()]
+        .filter(([, socket]) => socket.readyState === WebSocket.OPEN)
+        .map(([id]) => id);
+      return online.length === 1 ? online[0] : null;
+    }
+    return null;
+  }
+
   isConnected(identity: string): boolean {
-    return this.sockets.get(identity)?.readyState === WebSocket.OPEN;
+    return this.resolveIdentity(identity) !== null;
   }
 
   attach(socket: WebSocket, identity: string) {
@@ -63,7 +79,12 @@ export class RemotePhoneHub {
     params?: Record<string, unknown>,
     timeoutMs = 12000
   ): Promise<PhoneResponse> {
-    const socket = this.sockets.get(identity);
+    const resolvedIdentity = this.resolveIdentity(identity);
+    if (!resolvedIdentity) {
+      throw new Error("PRIME phone is not connected to the remote bridge");
+    }
+
+    const socket = this.sockets.get(resolvedIdentity);
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       throw new Error("PRIME phone is not connected to the remote bridge");
     }
@@ -76,7 +97,7 @@ export class RemotePhoneHub {
         this.pending.delete(id);
         reject(new Error(`Phone command timed out: ${command}`));
       }, timeoutMs);
-      this.pending.set(id, { identity, resolve, reject, timer });
+      this.pending.set(id, { identity: resolvedIdentity, resolve, reject, timer });
       socket.send(payload, (error) => {
         if (!error) return;
         clearTimeout(timer);
