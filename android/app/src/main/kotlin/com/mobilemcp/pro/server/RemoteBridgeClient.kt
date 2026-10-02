@@ -19,10 +19,15 @@ class RemoteBridgeClient(
     private val credential: String,
     private val onLog: (String) -> Unit = {}
 ) {
+    data class PairingResult(
+        val credential: String,
+        val mcpUrl: String
+    )
+
     companion object {
         private const val TAG = "RemoteBridgeClient"
 
-        fun pair(relayBaseUrl: String, pairingCode: String, deviceId: String): String {
+        fun pair(relayBaseUrl: String, pairingCode: String, deviceId: String): PairingResult {
             require(pairingCode.matches(Regex("\\d{6}"))) {
                 "Pairing code must be 6 digits"
             }
@@ -71,9 +76,12 @@ class RemoteBridgeClient(
                 )
             }
 
-            val token = JSONObject(responseBody).optString("credential").trim()
+            val json = JSONObject(responseBody)
+            val token = json.optString("credential").trim()
+            val mcpUrl = json.optString("mcpUrl").trim()
             require(token.length >= 32) { "Bridge returned an invalid credential" }
-            return token
+            require(mcpUrl.startsWith("https://")) { "Bridge returned an invalid MCP URL" }
+            return PairingResult(token, mcpUrl)
         }
 
         fun websocketUrl(relayBaseUrl: String): String {
