@@ -1,23 +1,24 @@
 package com.mobilemcp.pro
 
-import com.sun.net.httpserver.HttpServer
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
-import java.net.InetSocketAddress
+import java.net.InetAddress
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Exercise real agent turns and HTTP/SSE boundaries, without a live account. */
 class PrimeAgentSessionTest {
     private class ApiFixture : AutoCloseable {
-        private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        private val executor = Executors.newCachedThreadPool { task -> Thread(task).apply { isDaemon = true } }
+        private val server = MockWebServer()
         val answers = ConcurrentLinkedQueue<String>()
         val requests = CopyOnWriteArrayList<JSONObject>()
         val modelRequests = AtomicInteger()
@@ -27,31 +28,28 @@ class PrimeAgentSessionTest {
         }
         val endpoints: PrimeApiEndpoints
         init {
-            server.executor = executor
-            server.createContext("/models") { exchange ->
-                modelRequests.incrementAndGet()
-                val body = """{"models":[{"slug":"test_sol","display_name":"Test Sol","visibility":"list"}]}""".toByteArray()
-                exchange.sendResponseHeaders(200, body.size.toLong())
-                exchange.responseBody.use { it.write(body) }
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    if (request.path == "/models") {
+                        modelRequests.incrementAndGet()
+                        return MockResponse().setHeader("Content-Type", "application/json")
+                            .setBody("""{"models":[{"slug":"test_sol","display_name":"Test Sol","visibility":"list"}]}""")
+                    }
+                    if (request.path != "/responses") return MockResponse().setResponseCode(404)
+                    requests += JSONObject(request.body.readUtf8())
+                    val answer = answers.poll() ?: """{"type":"reply","text":"پاسخ آزمون"}"""
+                    val event = JSONObject().put("type", "response.completed").put("response", JSONObject()
+                        .put("status", "completed").put("output", JSONArray().put(JSONObject().put("type", "message")
+                            .put("content", JSONArray().put(JSONObject().put("type", "output_text").put("text", answer))))))
+                    return MockResponse().setHeader("Content-Type", "text/event-stream")
+                        .setBody("event: response.completed\ndata: $event\n\n")
+                }
             }
-            server.createContext("/responses") { exchange ->
-                val request = exchange.requestBody.bufferedReader().use { it.readText() }
-                requests += JSONObject(request)
-                val answer = answers.poll() ?: """{"type":"reply","text":"پاسخ آزمون"}"""
-                val event = JSONObject().put("type", "response.completed").put("response", JSONObject()
-                    .put("status", "completed").put("output", JSONArray().put(JSONObject().put("type", "message")
-                        .put("content", JSONArray().put(JSONObject().put("type", "output_text").put("text", answer))))))
-                val body = "event: response.completed\ndata: $event\n\n".toByteArray(Charsets.UTF_8)
-                exchange.responseHeaders.add("Content-Type", "text/event-stream")
-                exchange.sendResponseHeaders(200, body.size.toLong())
-                exchange.responseBody.use { it.write(body) }
-            }
-            server.start()
-            val base = "http://127.0.0.1:${server.address.port}"
-            endpoints = PrimeApiEndpoints("$base/models", "$base/responses")
+            server.start(InetAddress.getByName("127.0.0.1"), 0)
+            endpoints = PrimeApiEndpoints(server.url("/models").toString(), server.url("/responses").toString())
         }
         fun agent() = PrimeAgent(credentials, endpoints).also { it.resetSession() }
-        override fun close() { server.stop(0); executor.shutdownNow() }
+        override fun close() { server.shutdown() }
     }
 
     private val ui = """{"status":"ready","localPhoneControl":true,"screen":{"package":"test.telegram","nodes":[{"text":"علی","clickable":true}]}}"""

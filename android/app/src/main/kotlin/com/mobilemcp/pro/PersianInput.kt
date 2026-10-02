@@ -61,7 +61,7 @@ object PersianInput {
         name = name.replace(Regex("^(?:برنامه|اپلیکیشن|اپ|application|app)\\s+"), "")
             .trim().trim('«', '»', '"', '\'').trim()
         if (name.isBlank() || name.split(' ').size > 6) return null
-        if (Regex("\\b(?:and|or|then|search|type|send)\\b|(?:^|\\s)(?:و|یا|بعد|سپس|سرچ|جستجو|بنویس|تایپ|بفرست|ارسال|چت|کانال|گروه)(?:\\s|$)").containsMatchIn(name)) return null
+        if (Regex("\\b(?:and|or|then|search|type|send|click|scroll)\\b|(?:^|\\s)(?:و|یا|بعد|سپس|سرچ|جستجو|بنویس|تایپ|بفرست|ارسال|چت|کانال|گروه|بزن|کلیک|اسکرول|انتخاب|پیدا|دانلود)(?:\\s|$)").containsMatchIn(name)) return null
         if (Regex("^(?:صفحه|بخش|پروفایل|پوشه|مخاطب|لینک|سایت|وب سایت)\\s").containsMatchIn(name)) return null
         if (Regex("^(?:تنظیمات|settings)\\s").containsMatchIn(name)) return null
         if (name.contains("http") || name.contains('/') || name.contains("www ")) return null

@@ -47,6 +47,7 @@ class PersianInputTest {
         assertNull(PersianInput.simpleAppTarget("برو گوگل و آب و هوا رو سرچ کن"))
         assertNull(PersianInput.simpleAppTarget("برو تلگرام یا روبیکا"))
         assertNull(PersianInput.simpleAppTarget("برو تو چت علی"))
+        assertNull(PersianInput.simpleAppTarget("برو تلگرام علی رو بزن"))
         assertNull(PersianInput.simpleAppTarget("برو https://example.com"))
         assertNull(PersianInput.simpleAppTarget("برو example.com"))
         assertNull(PersianInput.simpleAppTarget("تنظیمات بلوتوث رو باز کن"))
