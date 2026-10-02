@@ -718,6 +718,35 @@
                 android:textColor="@color/text_primary"
                 android:textSize="13sp" />
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="@string/ui_bridge_token_label"
+                android:textColor="@color/text_muted"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/tvBridgeToken"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/edit_text_bg"
+                android:fontFamily="monospace"
+                android:padding="10dp"
+                android:text="--"
+                android:textColor="@color/text_primary"
+                android:textIsSelectable="true"
+                android:textSize="11sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCopyBridgeToken"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/ui_bridge_copy_token"
+                android:textAllCaps="false" />
+
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnToggleServer"
                 android:layout_width="match_parent"
