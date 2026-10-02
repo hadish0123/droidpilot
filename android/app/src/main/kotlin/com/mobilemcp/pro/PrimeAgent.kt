@@ -7,6 +7,10 @@ import com.mobilemcp.pro.ai.AiTextRequest
 import com.mobilemcp.pro.ai.ModelPurpose
 import com.mobilemcp.pro.ai.ModelRegistry
 import com.mobilemcp.pro.ai.OpenAiResponsesProvider
+import com.mobilemcp.pro.tools.ToolExecutionResult
+import com.mobilemcp.pro.tools.ToolInvocation
+import com.mobilemcp.pro.tools.ToolRegistry
+import com.mobilemcp.pro.tools.ToolRuntime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -63,6 +67,8 @@ class PrimeAgent internal constructor(
 
     private val chatHistory = mutableListOf<ChatLine>()
     private val modelRegistry = ModelRegistry()
+    private val toolRegistry = ToolRegistry.default()
+    private val toolRuntime = ToolRuntime(toolRegistry)
     private var phoneContext = false
     private var availableModels: List<AiModel>? = null
     private var fastModel: AiModel? = null
@@ -160,23 +166,10 @@ Need user confirmation:
 Phone action:
 {"type":"action","command":"COMMAND","params":{...},"note":"short progress text"}
 
-Allowed COMMAND values:
-- open_app params: {"name":"Telegram"} or {"package":"org.telegram.messenger"}
-- open_url params: {"url":"https://example.com"}
-- click_element params: {"text":"..."} or {"id":"..."} or {"contentDescription":"..."}
-- tap params: {"x":123,"y":456}
-- long_press params: {"x":123,"y":456,"duration":1000}
-- set_text params: {"text":"..."}
-- type_text params: {"text":"..."}
-- scroll params: {"direction":"up|down|left|right","amount":500}
-- swipe params: {"startX":1,"startY":2,"endX":3,"endY":4,"duration":300}
-- press_key params: {"key":"back|home|recents|notifications|quick_settings"}
-- wait_for_element params: {"text":"...","timeout":10000}
-- get_ui_tree params: {}
-- get_focused params: {}
-- find_element params: {"text":"..."} or {"id":"..."} or {"contentDescription":"..."}
-- get_device_info params: {}
+Allowed COMMAND values are generated from the local registry:
+${toolRegistry.promptCatalog()}
 
+Never invent commands that are not in this registry.
 Never wrap JSON in markdown fences.
 """.trimIndent()
 
@@ -331,12 +324,17 @@ Never wrap JSON in markdown fences.
                     onProgress(note)
 
                     coroutineContext.ensureActive()
-                    val result = try {
-                        actionRunner(command, params)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        PrimeActionResult(false, e.message ?: "Action failed")
+                    val result = toolRuntime.execute(
+                        ToolInvocation(command, params)
+                    ) { invocation ->
+                        val local = actionRunner(
+                            invocation.name,
+                            invocation.params
+                        )
+                        ToolExecutionResult(
+                            success = local.success,
+                            summary = local.summary
+                        )
                     }
 
                     actionHistory += command + ": " +
@@ -344,8 +342,13 @@ Never wrap JSON in markdown fences.
                         result.summary
 
                     if (result.success) delay(350)
-                    else if (result.summary.contains("Accessibility", true) || result.summary.contains("ACCESSIBILITY_OFF")) {
-                        return PrimeOutcome("برای کنترل گوشی، دسترسی Accessibility را از تنظیمات PRIME فعال کن.")
+                    else if (
+                        result.summary.contains("Accessibility", true) ||
+                        result.summary.contains("ACCESSIBILITY_OFF")
+                    ) {
+                        return PrimeOutcome(
+                            "برای کنترل گوشی، دسترسی Accessibility را از تنظیمات PRIME فعال کن."
+                        )
                     }
                 }
 
