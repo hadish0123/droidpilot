@@ -221,6 +221,18 @@ class MainActivity : AppCompatActivity() {
         }
         binding.btnPairRemote.setOnClickListener { pairRemoteBridge() }
         binding.btnStopRemote.setOnClickListener { stopRemoteBridge() }
+        binding.btnCopyRemoteMcp.setOnClickListener {
+            val mcpUrl = remoteBridgeSecurity.mcpUrl() ?: return@setOnClickListener
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(
+                ClipData.newPlainText(getString(R.string.ui_remote_mcp_url), mcpUrl)
+            )
+            Toast.makeText(
+                this,
+                R.string.ui_remote_mcp_copied,
+                Toast.LENGTH_SHORT
+            ).show()
+        }
         binding.tvBridgeToken.text = bridgeAuthToken
         binding.btnCopyBridgeToken.setOnClickListener {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -1337,14 +1349,15 @@ class MainActivity : AppCompatActivity() {
 
         appScope.launch {
             try {
-                val credential = withContext(Dispatchers.IO) {
+                val pairing = withContext(Dispatchers.IO) {
                     RemoteBridgeClient.pair(
                         RemoteBridgeSecurity.DEFAULT_RELAY_URL,
                         code,
                         remoteBridgeSecurity.getOrCreateDeviceId()
                     )
                 }
-                remoteBridgeSecurity.saveCredential(credential)
+                remoteBridgeSecurity.saveCredential(pairing.credential)
+                remoteBridgeSecurity.saveMcpUrl(pairing.mcpUrl)
                 remoteBridgeSecurity.setEnabled(true)
                 binding.etRemotePairingCode.setText("")
                 startRemoteBridgeService()
@@ -1402,6 +1415,9 @@ class MainActivity : AppCompatActivity() {
                 R.string.ui_remote_off
             }
         )
+        val mcpUrl = remoteBridgeSecurity.mcpUrl()
+        binding.tvRemoteMcpUrl.text = mcpUrl ?: "--"
+        binding.btnCopyRemoteMcp.isEnabled = !mcpUrl.isNullOrBlank()
     }
 
     private fun startServer() {
