@@ -1,9 +1,0 @@
-Released DroidPilot - an open-source MCP server for Android automation via Accessibility Service
-
-Most mobile MCPs rely on ADB or screenshot OCR and are unreliable. DroidPilot talks directly to the OS for stable UI control over WiFi. No ADB, no OCR, just native API access.
-
-18 MCP tools: tap, swipe, type, screenshot, UI tree, find element, wait for element, open app, and more
-
-https://github.com/youichi-uda/droidpilot
-
-#MCP #Android #AI #OpenSource #ClaudeCode #LLM #Automation #ModelContextProtocol
