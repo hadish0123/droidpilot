@@ -8,8 +8,8 @@ type ToolResult = { content: (TextContent | ImageContent)[] };
 
 export function createServer(): McpServer {
   const server = new McpServer({
-    name: "droidpilot",
-    version: "1.0.0",
+    name: "prime-p6",
+    version: "6.0.0",
   });
 
   let client: AndroidClient | null = null;
