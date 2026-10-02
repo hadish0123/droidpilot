@@ -26,7 +26,6 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.view.GravityCompat
 import com.google.android.material.button.MaterialButton
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -969,7 +968,7 @@ class MainActivity : AppCompatActivity() {
     private fun enterVoiceMode() {
         if (!authManager.isSignedIn()) {
             appendChat("PRIME", "اول ChatGPT را از منوی کناری وصل کن.")
-            binding.drawerLayout.openDrawer(GravityCompat.START)
+            binding.drawerLayout.openDrawer(Gravity.RIGHT)
             return
         }
 
@@ -1273,14 +1272,14 @@ class MainActivity : AppCompatActivity() {
                 when (which) {
                     0 -> {
                         if (authManager.isSignedIn()) {
-                            binding.drawerLayout.openDrawer(GravityCompat.START)
+                            binding.drawerLayout.openDrawer(Gravity.RIGHT)
                         } else {
                             connectChatGpt()
                         }
                     }
                     1 -> startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     2 -> startActivity(Intent(Settings.ACTION_SETTINGS))
-                    3 -> binding.drawerLayout.openDrawer(GravityCompat.START)
+                    3 -> binding.drawerLayout.openDrawer(Gravity.RIGHT)
                 }
             }
             .show()
