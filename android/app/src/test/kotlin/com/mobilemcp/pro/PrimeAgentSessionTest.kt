@@ -242,6 +242,9 @@ class PrimeAgentSessionTest {
     @Test fun unregisteredModelCommandsAreRejectedBeforeRuntimeExecution() = runBlocking {
         ApiFixture().use { api ->
             val agent = api.agent()
+            agent.restoreConversation(
+                listOf("user" to "برو تلگرام", "assistant" to "تلگرام باز شد")
+            )
             api.answers += """{"type":"action","command":"shell_exec","params":{"cmd":"id"}}"""
             api.answers += """{"type":"reply","text":"فرمان ناشناخته اجرا نشد."}"""
 
