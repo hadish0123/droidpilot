@@ -10,40 +10,43 @@ import org.java_websocket.WebSocket
 import org.java_websocket.handshake.ClientHandshake
 import org.java_websocket.server.WebSocketServer
 import java.net.InetSocketAddress
+import java.security.MessageDigest
 import java.util.concurrent.Executors
 
 class WebSocketCommandServer(
     port: Int,
+    authToken: String,
     private val onLog: (String) -> Unit,
     private val onConnectionChange: (Int) -> Unit
 ) : WebSocketServer(InetSocketAddress(port)) {
 
     companion object {
         private const val TAG = "WSCommandServer"
+        private const val MIN_TOKEN_LENGTH = 32
+        private const val AUTH_PREFIX = "Bearer "
     }
 
     private val gson = Gson()
     private val executor = Executors.newSingleThreadExecutor()
     private val connectedClients = mutableSetOf<WebSocket>()
-
-    // Optional: authentication token
-    var authToken: String? = null
+    private val authToken = authToken.trim().also {
+        require(it.length >= MIN_TOKEN_LENGTH) {
+            "Device Bridge authentication token is missing or too short"
+        }
+    }
 
     override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
         val remoteAddr = conn.remoteSocketAddress?.toString() ?: "unknown"
-        Log.i(TAG, "Client connected: $remoteAddr")
-        onLog("Client connected: $remoteAddr")
 
-        // Check auth token if set
-        if (authToken != null) {
-            val providedToken = handshake.getFieldValue("Authorization")
-            if (providedToken != "Bearer $authToken") {
-                conn.close(4001, "Unauthorized")
-                onLog("Client rejected (bad token): $remoteAddr")
-                return
-            }
+        if (!isAuthorized(handshake.getFieldValue("Authorization"))) {
+            Log.w(TAG, "Rejected unauthenticated client: $remoteAddr")
+            onLog("Client rejected: authentication required")
+            conn.close(4001, "Unauthorized")
+            return
         }
 
+        Log.i(TAG, "Authenticated client connected: $remoteAddr")
+        onLog("Authenticated client connected: $remoteAddr")
         synchronized(connectedClients) {
             connectedClients.add(conn)
         }
@@ -61,10 +64,12 @@ class WebSocketCommandServer(
     }
 
     override fun onMessage(conn: WebSocket, message: String) {
-        // A rejected handshake must never get an opportunity to execute a
-        // command while its close frame is still being delivered.
         if (!synchronized(connectedClients) { conn in connectedClients }) return
-        if (message.length > 1_000_000) { conn.close(1009, "Message too large"); return }
+        if (message.length > 1_000_000) {
+            conn.close(1009, "Message too large")
+            return
+        }
+
         executor.submit {
             try {
                 val request = gson.fromJson(message, CommandRequest::class.java)
@@ -77,18 +82,22 @@ class WebSocketCommandServer(
 
                 val service = MobileAccessibilityService.instance
                 if (service == null) {
-                    sendError(conn, request.id, "Accessibility service is not running. Enable it in Settings.")
+                    sendError(
+                        conn,
+                        request.id,
+                        "Accessibility service is not running. Enable it in Settings."
+                    )
                     return@submit
                 }
 
                 val response = service.handleCommand(request)
-                // Stamp the request ID onto the response
                 val finalResponse = response.copy(id = request.id)
-                val json = gson.toJson(finalResponse)
-                conn.send(json)
+                conn.send(gson.toJson(finalResponse))
 
-                onLog("<< ${request.command}: ${if (finalResponse.success) "OK" else "ERR"}")
-
+                onLog(
+                    "<< ${request.command}: " +
+                        if (finalResponse.success) "OK" else "ERR"
+                )
             } catch (e: JsonSyntaxException) {
                 sendError(conn, null, "Invalid JSON: ${e.message}")
             } catch (e: Exception) {
@@ -104,12 +113,21 @@ class WebSocketCommandServer(
     }
 
     override fun onStart() {
-        Log.i(TAG, "WebSocket server started on port ${this.port}")
-        onLog("Server started on port ${this.port}")
+        Log.i(TAG, "Authenticated WebSocket server started on port ${this.port}")
+        onLog("Authenticated bridge started on port ${this.port}")
         connectionLostTimeout = 60
     }
 
-    fun getConnectionCount(): Int = synchronized(connectedClients) { connectedClients.size }
+    fun getConnectionCount(): Int =
+        synchronized(connectedClients) { connectedClients.size }
+
+    private fun isAuthorized(header: String?): Boolean {
+        if (header.isNullOrBlank() || !header.startsWith(AUTH_PREFIX)) return false
+
+        val provided = header.removePrefix(AUTH_PREFIX).toByteArray(Charsets.UTF_8)
+        val expected = authToken.toByteArray(Charsets.UTF_8)
+        return MessageDigest.isEqual(provided, expected)
+    }
 
     private fun sendError(conn: WebSocket, id: String?, message: String) {
         val response = CommandResponse.error(id, message)
