@@ -24,6 +24,7 @@
     <string name="voice_notification_title">PRIME P6 Voice is active</string>
     <string name="voice_notification_text">میکروفن و پاسخ فارسی در برنامه‌های دیگر فعال‌اند</string>
     <string name="ui_ready">آماده</string>
+    <string name="ui_stop_generation">توقف پاسخ</string>
     <string name="ui_connect">اتصال ChatGPT برای شروع</string>
     <string name="ui_voice_title">گفت‌وگوی صوتی PRIME</string>
     <string name="ui_listening">در حال گوش دادن…</string>
