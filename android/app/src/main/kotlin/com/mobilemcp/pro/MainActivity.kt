@@ -84,6 +84,7 @@ class MainActivity : AppCompatActivity() {
         updateAccessibilityStatus()
         updateAuthUI()
         startFreshChat(showGreeting = true)
+        warmUpPrime()
 
         if (intent?.data?.scheme == "primep6") {
             binding.tvAgentStatus.text = "Finishing ChatGPT connection…"
@@ -161,6 +162,19 @@ class MainActivity : AppCompatActivity() {
         updateServerUI()
     }
 
+    private fun warmUpPrime() {
+        if (!authManager.isSignedIn()) return
+
+        appScope.launch(Dispatchers.IO) {
+            try {
+                primeAgent.warmUp()
+            } catch (_: Exception) {
+                // Warm-up is best effort. Real requests still have retry and
+                // user-facing diagnostics.
+            }
+        }
+    }
+
     private fun connectChatGpt() {
         if (isBusy) return
         binding.drawerLayout.closeDrawers()
@@ -184,6 +198,7 @@ class MainActivity : AppCompatActivity() {
 
                 primeAgent.resetSession()
                 updateAuthUI()
+                warmUpPrime()
                 showPlanWelcomeOnce()
 
                 val label = profile.email ?: profile.name ?: "ChatGPT account"
