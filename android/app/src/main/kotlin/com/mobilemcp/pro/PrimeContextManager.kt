@@ -100,12 +100,11 @@ internal class PrimeContextManager(
         }
 
         val selected = selectedReversed.asReversed()
-        val eligibleCount = history.count { !exclude(it) }
 
         return PrimeContextWindow(
             messages = selected,
             estimatedTokens = tokens + reservedForPrompt,
-            droppedMessages = (eligibleCount - selected.size).coerceAtLeast(0)
+            droppedMessages = (history.size - selected.size).coerceAtLeast(0)
         )
     }
 
