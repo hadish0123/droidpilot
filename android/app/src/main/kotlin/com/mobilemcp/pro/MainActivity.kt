@@ -154,7 +154,7 @@ class MainActivity : AppCompatActivity() {
         }
         binding.btnVoiceSettings.setOnClickListener {
             try {
-                startActivity(Intent(Settings.ACTION_TTS_SETTINGS))
+                startActivity(Intent("com.android.settings.TTS_SETTINGS"))
             } catch (_: Exception) {
                 startActivity(Intent(Settings.ACTION_SETTINGS))
             }
@@ -205,7 +205,7 @@ class MainActivity : AppCompatActivity() {
             if (isServerRunning) stopServer() else startServer()
         }
 
-        binding.tvAppVersion.text = "P6 • PRIME " + BuildConfig.VERSION_NAME
+        binding.tvAppVersion.text = "P6 • PRIME " + appVersionName()
         updateComposerButtons()
         updateIPAddress()
         updateServerUI()
@@ -494,7 +494,7 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     chat.title
                 }
-                textAllCaps = false
+                isAllCaps = false
                 textAlignment = View.TEXT_ALIGNMENT_VIEW_START
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
                 layoutParams = LinearLayout.LayoutParams(
@@ -515,11 +515,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            val deleteButton = MaterialButton(
-                this,
-                null,
-                com.google.android.material.R.attr.materialButtonTextStyle
-            ).apply {
+            val deleteButton = MaterialButton(this).apply {
                 text = "×"
                 textSize = 22f
                 contentDescription = "Delete chat"
@@ -617,11 +613,22 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun appVersionName(): String {
+        return try {
+            packageManager
+                .getPackageInfo(packageName, 0)
+                .versionName
+                ?: "6.0.3"
+        } catch (_: Exception) {
+            "6.0.3"
+        }
+    }
+
     private fun showAboutPrime() {
         AlertDialog.Builder(this)
             .setTitle("PRIME P6")
             .setMessage(
-                "Version ${BuildConfig.VERSION_NAME}\n\n" +
+                "Version ${appVersionName()}\n\n" +
                     "PRIME is a private Android action assistant. " +
                     "P6 is the PRIME product identity.\n\n" +
                     "Chats are saved locally on this phone. " +
