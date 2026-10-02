@@ -86,13 +86,13 @@ class OpenAIAuthManager(private val context: Context) {
                 for (i in 0 until scopesJson.length()) add(scopesJson.optString(i))
             }
             AuthRecord(
-                subject = json.optString("subject").ifBlank { null },
-                email = json.optString("email").ifBlank { null },
-                name = json.optString("name").ifBlank { null },
-                clientId = json.optString("client_id").ifBlank { null },
-                idToken = json.optString("id_token").ifBlank { null },
-                accessToken = json.optString("access_token").ifBlank { null },
-                refreshToken = json.optString("refresh_token").ifBlank { null },
+                subject = json.optString("subject").takeIf { it.isNotBlank() },
+                email = json.optString("email").takeIf { it.isNotBlank() },
+                name = json.optString("name").takeIf { it.isNotBlank() },
+                clientId = json.optString("client_id").takeIf { it.isNotBlank() },
+                idToken = json.optString("id_token").takeIf { it.isNotBlank() },
+                accessToken = json.optString("access_token").takeIf { it.isNotBlank() },
+                refreshToken = json.optString("refresh_token").takeIf { it.isNotBlank() },
                 scopes = scopes,
                 expiresAtMs = json.optLong("expires_at_ms", 0L)
             )
@@ -285,10 +285,9 @@ class OpenAIAuthManager(private val context: Context) {
 
         val record = AuthRecord(
             subject = subject,
-            email = claims.optString("email").ifBlank { null },
-            name = claims.optString("name").ifBlank {
-                claims.optString("preferred_username").ifBlank { null }
-            },
+            email = claims.optString("email").takeIf { it.isNotBlank() },
+            name = claims.optString("name").takeIf { it.isNotBlank() }
+                ?: claims.optString("preferred_username").takeIf { it.isNotBlank() },
             clientId = issuedClientId,
             idToken = idToken,
             accessToken = accessToken,
@@ -307,20 +306,22 @@ class OpenAIAuthManager(private val context: Context) {
         )
     }
 
-    suspend fun accessToken(): String = refreshMutex.withLock {
-        val current = loadRecord() ?: throw IllegalStateException("Continue with ChatGPT first")
-        val access = current.accessToken
-        if (!access.isNullOrBlank() && current.expiresAtMs - System.currentTimeMillis() > 120_000L) {
-            return@withLock access
-        }
+    suspend fun accessToken(): String = withContext(Dispatchers.IO) {
+        refreshMutex.withLock {
+            val current = loadRecord() ?: throw IllegalStateException("Continue with ChatGPT first")
+            val access = current.accessToken
+            if (!access.isNullOrBlank() &&
+                current.expiresAtMs - System.currentTimeMillis() > 120_000L
+            ) {
+                return@withLock access
+            }
 
-        val refresh = current.refreshToken
-            ?: throw IllegalStateException("ChatGPT session needs to be connected again")
-        val clientId = current.clientId
-            ?: throw IllegalStateException("Saved ChatGPT registration is incomplete")
+            val refresh = current.refreshToken
+                ?: throw IllegalStateException("ChatGPT session needs to be connected again")
+            val clientId = current.clientId
+                ?: throw IllegalStateException("Saved ChatGPT registration is incomplete")
 
-        val tokenJson = withContext(Dispatchers.IO) {
-            postForm(
+            val tokenJson = postForm(
                 TOKEN_ENDPOINT,
                 mapOf(
                     "grant_type" to "refresh_token",
@@ -329,27 +330,28 @@ class OpenAIAuthManager(private val context: Context) {
                     "resource" to RESOURCE
                 )
             )
-        }
 
-        val newAccess = tokenJson.optString("access_token").takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("OpenAI refresh did not return an access token")
-        val newRefresh = tokenJson.optString("refresh_token").takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("OpenAI refresh did not return a replacement refresh token")
-        val newIdToken = tokenJson.optString("id_token").takeIf { it.isNotBlank() } ?: current.idToken
-        val scopes = parseScopes(tokenJson.optString("scope")).ifEmpty { current.scopes }
-        if (!scopes.contains(REQUIRED_SCOPE)) {
-            throw IllegalStateException("ChatGPT plan usage is no longer enabled for PRIME")
-        }
+            val newAccess = tokenJson.optString("access_token").takeIf { it.isNotBlank() }
+                ?: throw IllegalStateException("OpenAI refresh did not return an access token")
+            val newRefresh = tokenJson.optString("refresh_token").takeIf { it.isNotBlank() }
+                ?: throw IllegalStateException("OpenAI refresh did not return a replacement refresh token")
+            val newIdToken = tokenJson.optString("id_token").takeIf { it.isNotBlank() } ?: current.idToken
+            val scopes = parseScopes(tokenJson.optString("scope")).ifEmpty { current.scopes }
+            if (!scopes.contains(REQUIRED_SCOPE)) {
+                throw IllegalStateException("ChatGPT plan usage is no longer enabled for PRIME")
+            }
 
-        val updated = current.copy(
-            idToken = newIdToken,
-            accessToken = newAccess,
-            refreshToken = newRefresh,
-            scopes = scopes,
-            expiresAtMs = System.currentTimeMillis() + tokenJson.optLong("expires_in", 3600L) * 1000L
-        )
-        saveRecord(updated)
-        return@withLock newAccess
+            val updated = current.copy(
+                idToken = newIdToken,
+                accessToken = newAccess,
+                refreshToken = newRefresh,
+                scopes = scopes,
+                expiresAtMs = System.currentTimeMillis() +
+                    tokenJson.optLong("expires_in", 3600L) * 1000L
+            )
+            saveRecord(updated)
+            newAccess
+        }
     }
 
     /**
