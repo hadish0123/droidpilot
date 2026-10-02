@@ -35,7 +35,9 @@ import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
 import com.mobilemcp.pro.databinding.ActivityMainBinding
 import com.mobilemcp.pro.server.WebSocketCommandServer
+import com.mobilemcp.pro.server.RemoteBridgeClient
 import com.mobilemcp.pro.service.ConnectionForegroundService
+import com.mobilemcp.pro.service.RemoteBridgeForegroundService
 import com.mobilemcp.pro.service.MobileAccessibilityService
 import com.mobilemcp.pro.service.VoiceSessionForegroundService
 import kotlinx.coroutines.CoroutineScope
@@ -63,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var primeAgent: PrimeAgent
     private lateinit var chatStore: PrimeChatStore
     private lateinit var bridgeSecurity: DeviceBridgeSecurity
+    private lateinit var remoteBridgeSecurity: RemoteBridgeSecurity
     private var bridgeAuthToken: String = ""
     private var currentChatId: Long = -1L
     private var renderedMessageCount: Int = 0
@@ -94,6 +97,7 @@ class MainActivity : AppCompatActivity() {
         chatStore = PrimeChatStore(applicationContext)
         bridgeSecurity = DeviceBridgeSecurity(SecureStore(applicationContext))
         bridgeAuthToken = bridgeSecurity.getOrCreateToken()
+        remoteBridgeSecurity = RemoteBridgeSecurity(SecureStore(applicationContext))
 
         setupTextToSpeech()
         setupUI()
@@ -215,6 +219,20 @@ class MainActivity : AppCompatActivity() {
         binding.btnToggleServer.setOnClickListener {
             if (isServerRunning) stopServer() else startServer()
         }
+        binding.btnPairRemote.setOnClickListener { pairRemoteBridge() }
+        binding.btnStopRemote.setOnClickListener { stopRemoteBridge() }
+        binding.btnCopyRemoteMcp.setOnClickListener {
+            val mcpUrl = remoteBridgeSecurity.mcpUrl() ?: return@setOnClickListener
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(
+                ClipData.newPlainText(getString(R.string.ui_remote_mcp_url), mcpUrl)
+            )
+            Toast.makeText(
+                this,
+                R.string.ui_remote_mcp_copied,
+                Toast.LENGTH_SHORT
+            ).show()
+        }
         binding.tvBridgeToken.text = bridgeAuthToken
         binding.btnCopyBridgeToken.setOnClickListener {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -235,6 +253,8 @@ class MainActivity : AppCompatActivity() {
         updateComposerButtons()
         updateIPAddress()
         updateServerUI()
+        updateRemoteBridgeUI()
+        restoreRemoteBridge()
         renderChatHistory()
     }
 
@@ -1315,6 +1335,82 @@ class MainActivity : AppCompatActivity() {
         binding.btnCreateNewChat.isEnabled = !busy
         binding.btnDeleteAllChats.isEnabled = !busy
         binding.tvAgentStatus.text = status ?: if (busy) "پرایم در حال انجام درخواست است…" else "آماده"
+    }
+
+    private fun pairRemoteBridge() {
+        binding.btnPairRemote.isEnabled = false
+        binding.tvRemoteStatus.setText(R.string.ui_remote_pairing)
+
+        appScope.launch {
+            try {
+                val pairing = withContext(Dispatchers.IO) {
+                    RemoteBridgeClient.pair(
+                        RemoteBridgeSecurity.DEFAULT_RELAY_URL,
+                        remoteBridgeSecurity.getOrCreateDeviceId(),
+                        bridgeAuthToken
+                    )
+                }
+                remoteBridgeSecurity.saveCredential(pairing.credential)
+                remoteBridgeSecurity.saveMcpUrl(pairing.mcpUrl)
+                remoteBridgeSecurity.setEnabled(true)
+                startRemoteBridgeService()
+                updateRemoteBridgeUI()
+                appendLog("PRIME remote bridge registered and started")
+            } catch (e: Exception) {
+                remoteBridgeSecurity.setEnabled(false)
+                binding.tvRemoteStatus.text =
+                    "اتصال راه دور کامل نشد: " + (e.message ?: "خطای نامشخص")
+                appendLog("Remote bridge registration failed: " + (e.message ?: "unknown"))
+            } finally {
+                binding.btnPairRemote.isEnabled = true
+            }
+        }
+    }
+
+    private fun startRemoteBridgeService() {
+        val credential = remoteBridgeSecurity.credential() ?: return
+        val intent = Intent(this, RemoteBridgeForegroundService::class.java).apply {
+            action = RemoteBridgeForegroundService.ACTION_START
+            putExtra(
+                RemoteBridgeForegroundService.EXTRA_RELAY_URL,
+                RemoteBridgeSecurity.DEFAULT_RELAY_URL
+            )
+            putExtra(
+                RemoteBridgeForegroundService.EXTRA_CREDENTIAL,
+                credential
+            )
+        }
+        startForegroundService(intent)
+    }
+
+    private fun stopRemoteBridge() {
+        remoteBridgeSecurity.setEnabled(false)
+        startService(
+            Intent(this, RemoteBridgeForegroundService::class.java).apply {
+                action = RemoteBridgeForegroundService.ACTION_STOP
+            }
+        )
+        updateRemoteBridgeUI()
+        appendLog("PRIME remote bridge stopped")
+    }
+
+    private fun restoreRemoteBridge() {
+        if (remoteBridgeSecurity.isEnabled() && remoteBridgeSecurity.credential() != null) {
+            startRemoteBridgeService()
+        }
+    }
+
+    private fun updateRemoteBridgeUI() {
+        binding.tvRemoteStatus.setText(
+            if (remoteBridgeSecurity.isEnabled()) {
+                R.string.ui_remote_on
+            } else {
+                R.string.ui_remote_off
+            }
+        )
+        val mcpUrl = remoteBridgeSecurity.mcpUrl()
+        binding.tvRemoteMcpUrl.text = mcpUrl ?: "--"
+        binding.btnCopyRemoteMcp.isEnabled = !mcpUrl.isNullOrBlank()
     }
 
     private fun startServer() {
