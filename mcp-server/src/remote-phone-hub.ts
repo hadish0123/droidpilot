@@ -45,6 +45,7 @@ export class RemotePhoneHub {
       try { previous.close(4002, "Replaced by newer PRIME connection"); } catch {}
     }
     this.sockets.set(identity, socket);
+    this.mostRecentIdentity = identity;
 
     socket.on("message", (raw) => {
       try {
