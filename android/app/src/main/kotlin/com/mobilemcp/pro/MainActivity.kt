@@ -14,12 +14,19 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.Gravity
 import android.view.View
 import android.view.accessibility.AccessibilityManager
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.GravityCompat
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.mobilemcp.pro.databinding.ActivityMainBinding
@@ -31,6 +38,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -54,6 +62,10 @@ class MainActivity : AppCompatActivity() {
     private var pendingConfirmationTask: String? = null
     private var isBusy = false
 
+    private var voiceModeActive = false
+    private var voiceAutoSend = false
+    private var pendingVoiceAutoSend = false
+
     private var wsServer: WebSocketCommandServer? = null
     private var isServerRunning = false
     private val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
@@ -70,7 +82,22 @@ class MainActivity : AppCompatActivity() {
         setupUI()
         updateAccessibilityStatus()
         updateAuthUI()
-        appendChat("PRIME", "PRIME P6 آماده است. با اکانت ChatGPT خودت وصل شو و بعد تایپ کن یا روی میکروفن بزن.")
+        startFreshChat(showGreeting = true)
+
+        if (intent?.data?.scheme == "primep6") {
+            binding.tvAgentStatus.text = "Finishing ChatGPT connection…"
+        }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent?.data?.scheme == "primep6" &&
+            intent.data?.host == "auth-complete"
+        ) {
+            binding.drawerLayout.closeDrawers()
+            binding.tvAgentStatus.text = "Finishing ChatGPT connection…"
+        }
     }
 
     override fun onResume() {
@@ -81,16 +108,33 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupUI() {
+        binding.btnMenu.setOnClickListener {
+            binding.drawerLayout.openDrawer(GravityCompat.START)
+        }
+        binding.btnNewChat.setOnClickListener { startFreshChat(showGreeting = false) }
+
+        binding.btnConnectBanner.setOnClickListener { connectChatGpt() }
         binding.btnSignIn.setOnClickListener { connectChatGpt() }
         binding.btnSignOut.setOnClickListener { disconnectChatGpt() }
         binding.btnUsage.setOnClickListener { authManager.openUsageSettings() }
 
         binding.btnSend.setOnClickListener { sendCurrentMessage() }
-        binding.btnMic.setOnClickListener { startVoiceInput() }
+        binding.btnMic.setOnClickListener { startVoiceInput(autoSend = false) }
+        binding.btnVoice.setOnClickListener { enterVoiceMode() }
+        binding.btnExitVoice.setOnClickListener { exitVoiceMode() }
+        binding.btnPlus.setOnClickListener { showQuickActions() }
+
         binding.etMessage.setOnEditorActionListener { _, _, _ ->
             sendCurrentMessage()
             true
         }
+        binding.etMessage.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                updateComposerButtons()
+            }
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
 
         binding.btnOpenAccessibility.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -100,29 +144,55 @@ class MainActivity : AppCompatActivity() {
             if (isServerRunning) stopServer() else startServer()
         }
 
+        updateComposerButtons()
         updateIPAddress()
         updateServerUI()
     }
 
     private fun connectChatGpt() {
         if (isBusy) return
+        binding.drawerLayout.closeDrawers()
         setBusy(true, "Opening ChatGPT sign-in…")
+
         appScope.launch {
             try {
-                val profile = authManager.signIn { uri ->
-                    startActivity(Intent(Intent.ACTION_VIEW, uri))
-                }
+                val profile = authManager.signIn(
+                    openBrowser = { uri ->
+                        startActivity(Intent(Intent.ACTION_VIEW, uri))
+                    },
+                    onCallbackReceived = {
+                        binding.tvAgentStatus.text = "Authorization received • finishing connection…"
+                    }
+                )
+
                 primeAgent.resetSession()
                 updateAuthUI()
                 showPlanWelcomeOnce()
+
                 val label = profile.email ?: profile.name ?: "ChatGPT account"
-                appendChat("PRIME", "اکانت وصل شد: " + label + ". حالا P6 آماده اجرای دستورهاست.")
+                appendChat("PRIME", "اکانت ChatGPT وصل شد: $label")
                 speak("اتصال انجام شد. پرایم آماده است.")
             } catch (e: Exception) {
-                appendChat("PRIME", "اتصال انجام نشد: " + (e.message ?: "خطای نامشخص"))
+                val message = authFriendlyError(e)
+                appendChat("PRIME", message)
             } finally {
                 setBusy(false)
             }
+        }
+    }
+
+    private fun authFriendlyError(e: Exception): String {
+        val message = e.message.orEmpty()
+        return when {
+            message.contains("PRIME_NETWORK_DNS") ->
+                "مرحله ورود در مرورگر انجام شد، ولی خود برنامه PRIME نتوانست به auth.openai.com وصل شود. " +
+                    "اگر VPN یا Proxy روشن است، PRIME را هم داخل لیست برنامه‌های VPN قرار بده و دوباره Continue with ChatGPT را بزن."
+            message.contains("PRIME_NETWORK_OPENAI") ->
+                "مرورگر مجوز را دریافت کرد، اما اتصال شبکه خود PRIME به OpenAI کامل نشد. اینترنت/VPN را بررسی کن و دوباره امتحان کن."
+            message.contains("invalid_grant", ignoreCase = true) ->
+                "کد ورود منقضی شد. یک بار دیگر Continue with ChatGPT را بزن؛ ثبت PRIME حفظ شده و دوباره از صفر ساخته نمی‌شود."
+            message.isNotBlank() -> "اتصال ChatGPT کامل نشد: $message"
+            else -> "اتصال ChatGPT کامل نشد."
         }
     }
 
@@ -141,7 +211,7 @@ class MainActivity : AppCompatActivity() {
             appendChat(
                 "PRIME",
                 if (remoteConfirmed) "اتصال ChatGPT قطع شد."
-                else "توکن‌های محلی پاک شدند. اگر لازم بود، دسترسی PRIME را از تنظیمات ChatGPT هم قطع کن."
+                else "ورود محلی پاک شد. برای قطع کامل دسترسی می‌توانی از تنظیمات ChatGPT هم PRIME را Disconnect کنی."
             )
             setBusy(false)
         }
@@ -150,21 +220,23 @@ class MainActivity : AppCompatActivity() {
     private fun updateAuthUI() {
         val profile = authManager.currentProfile()
         val signedIn = authManager.isSignedIn()
+
         binding.btnSignIn.visibility = if (signedIn) View.GONE else View.VISIBLE
         binding.btnSignOut.visibility = if (signedIn) View.VISIBLE else View.GONE
         binding.btnUsage.visibility = if (signedIn) View.VISIBLE else View.GONE
+        binding.btnConnectBanner.visibility = if (signedIn) View.GONE else View.VISIBLE
 
         binding.tvAccountStatus.text = if (signedIn) {
             val label = profile?.email ?: profile?.name ?: "Connected ChatGPT account"
-            "Connected • " + label
+            "Connected • $label"
         } else {
             "Not connected"
         }
 
         binding.tvModelStatus.text = if (signedIn) {
-            "PRIME • P6 • Using ChatGPT plan"
+            "P6 • ChatGPT plan"
         } else {
-            "PRIME • P6"
+            "P6"
         }
     }
 
@@ -173,9 +245,12 @@ class MainActivity : AppCompatActivity() {
         if (prefs.getBoolean("chatgpt_plan_welcome_shown", false)) return
 
         AlertDialog.Builder(this)
-            .setTitle("You're using your ChatGPT plan")
-            .setMessage("Eligible PRIME P6 AI requests use your ChatGPT plan allowance. You can review and manage usage from ChatGPT settings.")
-            .setPositiveButton("Got it") { dialog, _ ->
+            .setTitle("ChatGPT plan connected")
+            .setMessage(
+                "درخواست‌های واجد شرایط PRIME P6 از سهمیه ChatGPT Plus/Pro متصل‌شده استفاده می‌کنند. " +
+                    "از Manage usage می‌توانی مصرف را ببینی."
+            )
+            .setPositiveButton("باشه") { dialog, _ ->
                 prefs.edit().putBoolean("chatgpt_plan_welcome_shown", true).apply()
                 dialog.dismiss()
             }
@@ -183,6 +258,23 @@ class MainActivity : AppCompatActivity() {
                 authManager.openUsageSettings()
             }
             .show()
+    }
+
+    private fun startFreshChat(showGreeting: Boolean) {
+        pendingConfirmationTask = null
+        primeAgent.resetSession()
+        binding.chatMessages.removeAllViews()
+        binding.etMessage.setText("")
+        binding.tvAgentStatus.text = "Ready"
+
+        if (showGreeting) {
+            appendChat(
+                "PRIME",
+                "PRIME P6 آماده است. می‌تونی مثل ChatGPT تایپ کنی، با میکروفن متن بگی، یا Voice Mode رو روشن کنی."
+            )
+        } else {
+            appendChat("PRIME", "چت جدید آماده است.")
+        }
     }
 
     private fun sendCurrentMessage() {
@@ -212,13 +304,13 @@ class MainActivity : AppCompatActivity() {
                     speak("لغو شد.")
                     return
                 }
-                else -> {
-                    pendingConfirmationTask = null
-                }
+                else -> pendingConfirmationTask = null
             }
         }
 
         setBusy(true, "P6 is working…")
+        if (voiceModeActive) binding.tvVoiceStatus.text = "Thinking…"
+
         appScope.launch {
             try {
                 val outcome = withContext(Dispatchers.IO) {
@@ -226,10 +318,15 @@ class MainActivity : AppCompatActivity() {
                         userText = task,
                         confirmedForTask = confirmed,
                         uiProvider = { readUiState() },
-                        actionRunner = { command, params -> executePrimeAction(command, params) },
+                        actionRunner = { command, params ->
+                            executePrimeAction(command, params)
+                        },
                         onProgress = { message ->
                             runOnUiThread {
-                                binding.tvAgentStatus.text = "P6 • " + message
+                                binding.tvAgentStatus.text = "P6 • $message"
+                                if (voiceModeActive) {
+                                    binding.tvVoiceStatus.text = message
+                                }
                             }
                         }
                     )
@@ -238,11 +335,14 @@ class MainActivity : AppCompatActivity() {
                 if (outcome.needsConfirmation) {
                     pendingConfirmationTask = task
                 }
+
                 appendChat("PRIME", outcome.text)
+                if (voiceModeActive) binding.tvVoiceStatus.text = outcome.text.take(140)
                 speak(outcome.text)
             } catch (e: Exception) {
                 val message = userFriendlyError(e)
                 appendChat("PRIME", message)
+                if (voiceModeActive) binding.tvVoiceStatus.text = message.take(140)
                 speak(message)
             } finally {
                 setBusy(false)
@@ -253,12 +353,14 @@ class MainActivity : AppCompatActivity() {
     private fun userFriendlyError(e: Exception): String {
         val message = e.message.orEmpty()
         return when {
+            message.contains("PRIME_NETWORK_DNS") ->
+                "خود PRIME به شبکه OpenAI دسترسی ندارد. اگر VPN روشن است PRIME را هم داخل VPN فعال کن."
             message.contains("usage limit", ignoreCase = true) ||
                 message.contains("subscription_sharing_usage_limit", ignoreCase = true) ->
-                "سهمیه فعلی ChatGPT به حدش رسیده. از «Manage usage» وضعیت مصرف را بررسی کن و بعداً دوباره امتحان کن."
+                "سهمیه فعلی ChatGPT به حدش رسیده. از Manage usage وضعیت مصرف را بررسی کن."
             message.contains("expired", ignoreCase = true) ->
                 "اتصال ChatGPT نیاز به ورود دوباره دارد."
-            message.isNotBlank() -> "خطا: " + message
+            message.isNotBlank() -> "خطا: $message"
             else -> "یک خطای نامشخص رخ داد."
         }
     }
@@ -300,7 +402,11 @@ class MainActivity : AppCompatActivity() {
             "open_url" -> openUrl(params)
             "get_ui_tree" -> {
                 val state = readUiState()
-                PrimeActionResult(!state.startsWith("UI_ERROR") && !state.startsWith("ACCESSIBILITY_OFF"), state.take(2500))
+                PrimeActionResult(
+                    !state.startsWith("UI_ERROR") &&
+                        !state.startsWith("ACCESSIBILITY_OFF"),
+                    state.take(2500)
+                )
             }
             else -> executeAccessibilityCommand(command, params)
         }
@@ -315,7 +421,10 @@ class MainActivity : AppCompatActivity() {
             "scroll", "swipe", "press_key", "wait_for_element", "get_focused"
         )
         if (command !in allowed) {
-            return@withContext PrimeActionResult(false, "Unsupported local action: " + command)
+            return@withContext PrimeActionResult(
+                false,
+                "Unsupported local action: $command"
+            )
         }
 
         val service = MobileAccessibilityService.instance
@@ -334,13 +443,18 @@ class MainActivity : AppCompatActivity() {
             CommandRequest("prime_action", command, gsonParams)
         )
         if (response.success) {
-            PrimeActionResult(true, response.data?.toString()?.take(2500) ?: "OK")
+            PrimeActionResult(
+                true,
+                response.data?.toString()?.take(2500) ?: "OK"
+            )
         } else {
             PrimeActionResult(false, response.error ?: "Action failed")
         }
     }
 
-    private suspend fun openApp(params: JSONObject): PrimeActionResult = withContext(Dispatchers.Main) {
+    private suspend fun openApp(
+        params: JSONObject
+    ): PrimeActionResult = withContext(Dispatchers.Main) {
         val explicitPackage = params.optString("package").takeIf { it.isNotBlank() }
         val requestedName = params.optString("name").takeIf { it.isNotBlank() }
 
@@ -350,7 +464,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         val intent = packageManager.getLaunchIntentForPackage(packageName)
-            ?: return@withContext PrimeActionResult(false, "App is not launchable: " + packageName)
+            ?: return@withContext PrimeActionResult(
+                false,
+                "App is not launchable: $packageName"
+            )
 
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         startActivity(intent)
@@ -380,30 +497,42 @@ class MainActivity : AppCompatActivity() {
             if (packageManager.getLaunchIntentForPackage(known) != null) return known
         }
 
-        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val launcherIntent = Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
         val activities = packageManager.queryIntentActivities(launcherIntent, 0)
 
         val exact = activities.firstOrNull {
-            it.loadLabel(packageManager).toString().trim().equals(name, ignoreCase = true)
+            it.loadLabel(packageManager)
+                .toString()
+                .trim()
+                .equals(name, ignoreCase = true)
         }
         if (exact != null) return exact.activityInfo.packageName
 
         return activities.firstOrNull {
-            it.loadLabel(packageManager).toString().contains(name, ignoreCase = true)
+            it.loadLabel(packageManager)
+                .toString()
+                .contains(name, ignoreCase = true)
         }?.activityInfo?.packageName
     }
 
-    private suspend fun openUrl(params: JSONObject): PrimeActionResult = withContext(Dispatchers.Main) {
+    private suspend fun openUrl(
+        params: JSONObject
+    ): PrimeActionResult = withContext(Dispatchers.Main) {
         val raw = params.optString("url")
         if (raw.isBlank()) return@withContext PrimeActionResult(false, "URL is missing")
+
         val uri = Uri.parse(raw)
         if (uri.scheme !in listOf("http", "https")) {
-            return@withContext PrimeActionResult(false, "Only http/https URLs are allowed")
+            return@withContext PrimeActionResult(
+                false,
+                "Only http/https URLs are allowed"
+            )
         }
 
-        return@withContext try {
+        try {
             startActivity(Intent(Intent.ACTION_VIEW, uri))
-            PrimeActionResult(true, "Opened " + raw)
+            PrimeActionResult(true, "Opened $raw")
         } catch (e: Exception) {
             PrimeActionResult(false, e.message ?: "Could not open URL")
         }
@@ -413,27 +542,80 @@ class MainActivity : AppCompatActivity() {
         textToSpeech = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 textToSpeech?.setSpeechRate(1.0f)
+                textToSpeech?.setOnUtteranceProgressListener(
+                    object : UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) = Unit
+                        override fun onError(utteranceId: String?) = Unit
+
+                        override fun onDone(utteranceId: String?) {
+                            if (voiceModeActive) {
+                                runOnUiThread {
+                                    appScope.launch {
+                                        delay(350)
+                                        if (voiceModeActive && !isBusy) {
+                                            startVoiceInput(autoSend = true)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                )
             }
         }
     }
 
     private fun speak(text: String) {
         val tts = textToSpeech ?: return
-        val language = if (text.any { it.code in 0x0600..0x06FF }) Locale("fa", "IR")
-        else Locale.getDefault()
+        val language = if (text.any { it.code in 0x0600..0x06FF }) {
+            Locale("fa", "IR")
+        } else {
+            Locale.getDefault()
+        }
 
         val result = tts.setLanguage(language)
-        if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+        if (result == TextToSpeech.LANG_MISSING_DATA ||
+            result == TextToSpeech.LANG_NOT_SUPPORTED
+        ) {
             tts.setLanguage(Locale.getDefault())
         }
-        tts.speak(text.take(2500), TextToSpeech.QUEUE_FLUSH, null, "prime-p6")
+
+        tts.speak(
+            text.take(2500),
+            TextToSpeech.QUEUE_FLUSH,
+            null,
+            "prime-p6-" + System.currentTimeMillis()
+        )
     }
 
-    private fun startVoiceInput() {
+    private fun enterVoiceMode() {
+        if (!authManager.isSignedIn()) {
+            appendChat("PRIME", "اول ChatGPT را از منوی کناری وصل کن.")
+            binding.drawerLayout.openDrawer(GravityCompat.START)
+            return
+        }
+        voiceModeActive = true
+        binding.voiceOverlay.visibility = View.VISIBLE
+        binding.tvVoiceStatus.text = "Listening…"
+        startVoiceInput(autoSend = true)
+    }
+
+    private fun exitVoiceMode() {
+        voiceModeActive = false
+        voiceAutoSend = false
+        speechRecognizer?.cancel()
+        textToSpeech?.stop()
+        binding.voiceOverlay.visibility = View.GONE
+        binding.tvAgentStatus.text = "Ready"
+    }
+
+    private fun startVoiceInput(autoSend: Boolean) {
         if (isBusy) return
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
         ) {
+            pendingVoiceAutoSend = autoSend
             ActivityCompat.requestPermissions(
                 this,
                 arrayOf(Manifest.permission.RECORD_AUDIO),
@@ -444,58 +626,98 @@ class MainActivity : AppCompatActivity() {
 
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             appendChat("PRIME", "تشخیص صدا روی این گوشی در دسترس نیست.")
+            if (voiceModeActive) binding.tvVoiceStatus.text = "Speech recognition unavailable"
             return
         }
 
-        if (speechRecognizer == null) {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).also { recognizer ->
-                recognizer.setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) {
-                        binding.tvAgentStatus.text = "Listening…"
-                    }
-
-                    override fun onBeginningOfSpeech() {
-                        binding.tvAgentStatus.text = "Listening…"
-                    }
-
-                    override fun onRmsChanged(rmsdB: Float) = Unit
-                    override fun onBufferReceived(buffer: ByteArray?) = Unit
-                    override fun onEndOfSpeech() {
-                        binding.tvAgentStatus.text = "Understanding…"
-                    }
-
-                    override fun onError(error: Int) {
-                        binding.tvAgentStatus.text = "Ready"
-                        appendChat("PRIME", "صدای واضحی دریافت نشد. دوباره امتحان کن.")
-                    }
-
-                    override fun onResults(results: Bundle?) {
-                        binding.tvAgentStatus.text = "Ready"
-                        val spoken = results
-                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            ?.firstOrNull()
-                            ?.trim()
-                            .orEmpty()
-                        if (spoken.isNotBlank()) {
-                            binding.etMessage.setText(spoken)
-                            binding.etMessage.setSelection(spoken.length)
-                            sendCurrentMessage()
-                        }
-                    }
-
-                    override fun onPartialResults(partialResults: Bundle?) = Unit
-                    override fun onEvent(eventType: Int, params: Bundle?) = Unit
-                })
-            }
-        }
+        voiceAutoSend = autoSend
+        ensureSpeechRecognizer()
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE,
+                Locale.getDefault().toLanguageTag()
+            )
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         }
         speechRecognizer?.startListening(intent)
+    }
+
+    private fun ensureSpeechRecognizer() {
+        if (speechRecognizer != null) return
+
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).also { recognizer ->
+            recognizer.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {
+                    binding.tvAgentStatus.text = "Listening…"
+                    if (voiceModeActive) binding.tvVoiceStatus.text = "Listening…"
+                }
+
+                override fun onBeginningOfSpeech() {
+                    binding.tvAgentStatus.text = "Listening…"
+                }
+
+                override fun onRmsChanged(rmsdB: Float) = Unit
+                override fun onBufferReceived(buffer: ByteArray?) = Unit
+
+                override fun onEndOfSpeech() {
+                    binding.tvAgentStatus.text = "Understanding…"
+                    if (voiceModeActive) binding.tvVoiceStatus.text = "Understanding…"
+                }
+
+                override fun onError(error: Int) {
+                    binding.tvAgentStatus.text = "Ready"
+                    if (voiceModeActive) {
+                        binding.tvVoiceStatus.text = "Listening…"
+                        appScope.launch {
+                            delay(700)
+                            if (voiceModeActive && !isBusy) {
+                                startVoiceInput(autoSend = true)
+                            }
+                        }
+                    } else if (error != SpeechRecognizer.ERROR_NO_MATCH &&
+                        error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                    ) {
+                        appendChat("PRIME", "صدای واضحی دریافت نشد. دوباره امتحان کن.")
+                    }
+                }
+
+                override fun onResults(results: Bundle?) {
+                    binding.tvAgentStatus.text = "Ready"
+                    val spoken = results
+                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()
+                        ?.trim()
+                        .orEmpty()
+
+                    if (spoken.isBlank()) {
+                        if (voiceModeActive) {
+                            appScope.launch {
+                                delay(500)
+                                startVoiceInput(autoSend = true)
+                            }
+                        }
+                        return
+                    }
+
+                    if (voiceAutoSend) {
+                        if (voiceModeActive) binding.tvVoiceStatus.text = spoken
+                        handleInput(spoken)
+                    } else {
+                        binding.etMessage.setText(spoken)
+                        binding.etMessage.setSelection(spoken.length)
+                    }
+                }
+
+                override fun onPartialResults(partialResults: Bundle?) = Unit
+                override fun onEvent(eventType: Int, params: Bundle?) = Unit
+            })
+        }
     }
 
     override fun onRequestPermissionsResult(
@@ -507,29 +729,97 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == REQUEST_RECORD_AUDIO &&
             grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
         ) {
-            startVoiceInput()
+            startVoiceInput(autoSend = pendingVoiceAutoSend)
         }
+    }
+
+    private fun updateComposerButtons() {
+        val hasText = !binding.etMessage.text.isNullOrBlank()
+        binding.btnSend.visibility = if (hasText) View.VISIBLE else View.GONE
+        binding.btnVoice.visibility = if (hasText) View.GONE else View.VISIBLE
     }
 
     private fun appendChat(who: String, message: String) {
         if (message.isBlank()) return
-        val line = who + "\n" + message.trim() + "\n\n"
-        binding.tvChat.append(line)
+
+        val isUser = who == "شما"
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = if (isUser) Gravity.END else Gravity.START
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(18)
+            }
+        }
+
+        val messageView = TextView(this).apply {
+            text = if (isUser) message.trim() else "PRIME\n" + message.trim()
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
+            textSize = 15f
+            setLineSpacing(0f, 1.2f)
+            setPadding(
+                if (isUser) dp(14) else 0,
+                if (isUser) dp(10) else 0,
+                if (isUser) dp(14) else 0,
+                if (isUser) dp(10) else 0
+            )
+            maxWidth = (resources.displayMetrics.widthPixels * 0.82f).toInt()
+            if (isUser) {
+                background = ContextCompat.getDrawable(
+                    this@MainActivity,
+                    R.drawable.user_message_bg
+                )
+            }
+            if (message.any { it.code in 0x0600..0x06FF }) {
+                textDirection = View.TEXT_DIRECTION_RTL
+            }
+        }
+
+        row.addView(messageView)
+        binding.chatMessages.addView(row)
         binding.chatScrollView.post {
             binding.chatScrollView.fullScroll(View.FOCUS_DOWN)
         }
+    }
+
+    private fun showQuickActions() {
+        val options = arrayOf(
+            if (authManager.isSignedIn()) "ChatGPT account" else "Connect ChatGPT",
+            "Phone control",
+            "Android settings",
+            "Device Bridge"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("PRIME actions")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> {
+                        if (authManager.isSignedIn()) {
+                            binding.drawerLayout.openDrawer(GravityCompat.START)
+                        } else {
+                            connectChatGpt()
+                        }
+                    }
+                    1 -> startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    2 -> startActivity(Intent(Settings.ACTION_SETTINGS))
+                    3 -> binding.drawerLayout.openDrawer(GravityCompat.START)
+                }
+            }
+            .show()
     }
 
     private fun setBusy(busy: Boolean, status: String? = null) {
         isBusy = busy
         binding.btnSend.isEnabled = !busy
         binding.btnMic.isEnabled = !busy
+        binding.btnVoice.isEnabled = !busy
         binding.btnSignIn.isEnabled = !busy
         binding.btnSignOut.isEnabled = !busy
         binding.tvAgentStatus.text = status ?: if (busy) "P6 is working…" else "Ready"
     }
-
-    // ---- Optional local/LAN MCP bridge ----
 
     private fun startServer() {
         if (!MobileAccessibilityService.isRunning) {
@@ -543,19 +833,24 @@ class MainActivity : AppCompatActivity() {
                 port = port,
                 onLog = { message -> runOnUiThread { appendLog(message) } },
                 onConnectionChange = { count ->
-                    runOnUiThread { binding.tvConnections.text = count.toString() }
+                    runOnUiThread {
+                        binding.tvConnections.text = count.toString()
+                    }
                 }
             )
             wsServer?.start()
 
-            val serviceIntent = Intent(this, ConnectionForegroundService::class.java).apply {
+            val serviceIntent = Intent(
+                this,
+                ConnectionForegroundService::class.java
+            ).apply {
                 putExtra(ConnectionForegroundService.EXTRA_PORT, port)
             }
             startForegroundService(serviceIntent)
 
             isServerRunning = true
             updateServerUI()
-            appendLog("PRIME Device Bridge started on port " + port)
+            appendLog("PRIME Device Bridge started on port $port")
         } catch (e: Exception) {
             appendLog("Failed to start bridge: " + e.message)
         }
@@ -598,17 +893,23 @@ class MainActivity : AppCompatActivity() {
             }
 
         if (isEnabled) {
-            indicator.setColor(ContextCompat.getColor(this, R.color.status_connected))
-            binding.tvAccessibilityStatus.text = "Phone control: ON"
+            indicator.setColor(
+                ContextCompat.getColor(this, R.color.status_connected)
+            )
+            binding.tvAccessibilityStatus.text = "ON"
         } else {
-            indicator.setColor(ContextCompat.getColor(this, R.color.status_disconnected))
-            binding.tvAccessibilityStatus.text = "Phone control: OFF"
+            indicator.setColor(
+                ContextCompat.getColor(this, R.color.status_disconnected)
+            )
+            binding.tvAccessibilityStatus.text = "OFF"
         }
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
         val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-        return am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_GENERIC).any {
+        return am.getEnabledAccessibilityServiceList(
+            AccessibilityServiceInfo.FEEDBACK_GENERIC
+        ).any {
             it.resolveInfo.serviceInfo.packageName == packageName
         }
     }
@@ -630,7 +931,9 @@ class MainActivity : AppCompatActivity() {
     @Suppress("DEPRECATION")
     private fun getDeviceIpAddress(): String? {
         return try {
-            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val wifiManager = applicationContext.getSystemService(
+                Context.WIFI_SERVICE
+            ) as WifiManager
             val ip = wifiManager.connectionInfo.ipAddress
             if (ip == 0) return null
             String.format(
@@ -648,7 +951,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun appendLog(message: String) {
         val timestamp = dateFormat.format(Date())
-        binding.tvLog.append("[" + timestamp + "] " + message + "\n")
+        binding.tvLog.append("[$timestamp] $message\n")
         binding.logScrollView.post {
             binding.logScrollView.fullScroll(View.FOCUS_DOWN)
         }
@@ -659,8 +962,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).toInt()
+
     override fun onDestroy() {
         if (isServerRunning) stopServer()
+        voiceModeActive = false
         speechRecognizer?.destroy()
         speechRecognizer = null
         textToSpeech?.stop()
