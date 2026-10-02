@@ -3,7 +3,7 @@ import { z } from "zod";
 export const toolDefinitions = {
   connect: {
     description:
-      "Connect to the Android device running Mobile MCP Pro. Must be called before any other commands.",
+      "Connect to the Android device running PRIME P6. Must be called before any other commands.",
     inputSchema: {
       host: z
         .string()
