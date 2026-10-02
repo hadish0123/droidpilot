@@ -9,9 +9,12 @@ import org.junit.Test
 class LambdaToolRuntimeTest {
     @Test fun delegatesContextAndExecution() = runBlocking {
         val runtime = LambdaToolRuntime(
-            contextReader = { task -> "context:$task" },
+            contextReader = { task -> "context:" + task },
             executor = { command, params ->
-                PrimeActionResult(true, "$command:${params.optString(\"value\")}")
+                PrimeActionResult(
+                    true,
+                    command + ":" + params.optString("value")
+                )
             }
         )
 
