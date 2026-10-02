@@ -53,7 +53,7 @@ class PrimeAgent(private val auth: OpenAIAuthManager) {
     }
 
     suspend fun testApiConnection(): String {
-        val models = loadAvailableModels()
+        val models = loadAvailableModels(forceRefresh = true)
         return "OpenAI API reachable • ${models.size} eligible model(s)"
     }
 
@@ -340,8 +340,12 @@ Never wrap JSON in markdown fences.
         return null
     }
 
-    private suspend fun loadAvailableModels(): List<ModelChoice> {
-        availableModels?.let { return it }
+    private suspend fun loadAvailableModels(
+        forceRefresh: Boolean = false
+    ): List<ModelChoice> {
+        if (!forceRefresh) {
+            availableModels?.let { return it }
+        }
 
         val token = auth.accessToken()
         val models = withNetworkRetry("models") {
