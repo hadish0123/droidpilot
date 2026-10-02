@@ -109,7 +109,6 @@ class VoiceSessionForegroundService : Service() {
     private var ttsSpeaking = false
     private var ttsFallbackAttempted = false
     private var ttsPreferredEngineUsed: String? = null
-    private var ttsFallbackAttempted = false
     private val speechQueue = ArrayDeque<String>()
     private val streamSpeechBuffer = StringBuilder()
     private var streamedSpeechStarted = false
