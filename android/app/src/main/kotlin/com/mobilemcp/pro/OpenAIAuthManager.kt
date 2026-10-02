@@ -627,8 +627,15 @@ class OpenAIAuthManager(private val context: Context) {
     }
 
     private fun networkFailure(last: Exception?): IllegalStateException {
-        val dns = generateSequence<Throwable?>(last) { it.cause }
-            .any { it is UnknownHostException }
+        var current: Throwable? = last
+        var dns = false
+        while (current != null) {
+            if (current is UnknownHostException) {
+                dns = true
+                break
+            }
+            current = current.cause
+        }
 
         return if (dns) {
             IllegalStateException(
