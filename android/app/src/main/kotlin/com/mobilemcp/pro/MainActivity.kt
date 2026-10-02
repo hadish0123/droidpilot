@@ -16,6 +16,7 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.view.View
 import android.view.accessibility.AccessibilityManager
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -111,7 +112,9 @@ class MainActivity : AppCompatActivity() {
                 val profile = authManager.signIn { uri ->
                     startActivity(Intent(Intent.ACTION_VIEW, uri))
                 }
+                primeAgent.resetSession()
                 updateAuthUI()
+                showPlanWelcomeOnce()
                 val label = profile.email ?: profile.name ?: "ChatGPT account"
                 appendChat("PRIME", "اکانت وصل شد: " + label + ". حالا P6 آماده اجرای دستورهاست.")
                 speak("اتصال انجام شد. پرایم آماده است.")
@@ -133,6 +136,7 @@ class MainActivity : AppCompatActivity() {
                 false
             }
             pendingConfirmationTask = null
+            primeAgent.resetSession()
             updateAuthUI()
             appendChat(
                 "PRIME",
@@ -158,10 +162,27 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.tvModelStatus.text = if (signedIn) {
-            "PRIME • P6 • " + primeAgent.engineLabel
+            "PRIME • P6 • Using ChatGPT plan"
         } else {
             "PRIME • P6"
         }
+    }
+
+    private fun showPlanWelcomeOnce() {
+        val prefs = getSharedPreferences("prime_p6_ux", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("chatgpt_plan_welcome_shown", false)) return
+
+        AlertDialog.Builder(this)
+            .setTitle("You're using your ChatGPT plan")
+            .setMessage("Eligible PRIME P6 AI requests use your ChatGPT plan allowance. You can review and manage usage from ChatGPT settings.")
+            .setPositiveButton("Got it") { dialog, _ ->
+                prefs.edit().putBoolean("chatgpt_plan_welcome_shown", true).apply()
+                dialog.dismiss()
+            }
+            .setNeutralButton("Manage usage") { _, _ ->
+                authManager.openUsageSettings()
+            }
+            .show()
     }
 
     private fun sendCurrentMessage() {
@@ -218,7 +239,6 @@ class MainActivity : AppCompatActivity() {
                     pendingConfirmationTask = task
                 }
                 appendChat("PRIME", outcome.text)
-                binding.tvModelStatus.text = "PRIME • P6 • " + primeAgent.engineLabel
                 speak(outcome.text)
             } catch (e: Exception) {
                 val message = userFriendlyError(e)
@@ -235,7 +255,7 @@ class MainActivity : AppCompatActivity() {
         return when {
             message.contains("usage limit", ignoreCase = true) ||
                 message.contains("subscription_sharing_usage_limit", ignoreCase = true) ->
-                "سهمیه فعلی ChatGPT به حدش رسیده. بعداً دوباره امتحان کن."
+                "سهمیه فعلی ChatGPT به حدش رسیده. از «Manage usage» وضعیت مصرف را بررسی کن و بعداً دوباره امتحان کن."
             message.contains("expired", ignoreCase = true) ->
                 "اتصال ChatGPT نیاز به ورود دوباره دارد."
             message.isNotBlank() -> "خطا: " + message
