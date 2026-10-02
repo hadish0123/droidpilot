@@ -2,29 +2,89 @@ package com.mobilemcp.pro.server
 
 import android.util.Log
 import com.google.gson.Gson
-import com.google.gson.JsonObject
 import com.mobilemcp.pro.model.CommandRequest
 import com.mobilemcp.pro.model.CommandResponse
 import com.mobilemcp.pro.service.MobileAccessibilityService
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
+import org.json.JSONObject
+import java.net.HttpURLConnection
 import java.net.URI
+import java.net.URL
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Optional outbound PRIME bridge for remote MCP relays.
- *
- * This is additive: the existing LAN WebSocketCommandServer remains unchanged.
- * The phone initiates the TLS connection, so no inbound port or public phone IP
- * is required. Relay authentication is carried in the Authorization header.
- */
 class RemoteBridgeClient(
-    private val relayUrl: String,
-    private val authToken: String,
+    private val relayBaseUrl: String,
+    private val credential: String,
     private val onLog: (String) -> Unit = {}
 ) {
-    companion object { private const val TAG = "RemoteBridgeClient" }
+    companion object {
+        private const val TAG = "RemoteBridgeClient"
+
+        fun pair(relayBaseUrl: String, pairingCode: String, deviceId: String): String {
+            require(pairingCode.matches(Regex("\\d{6}"))) {
+                "Pairing code must be 6 digits"
+            }
+            require(deviceId.matches(Regex("[a-zA-Z0-9_-]{8,128}"))) {
+                "Invalid device identifier"
+            }
+
+            val base = relayBaseUrl.trim().trimEnd('/')
+            require(base.startsWith("https://")) {
+                "Remote bridge pairing requires HTTPS"
+            }
+
+            val connection = (URL("$base/phone/pair").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 15_000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "application/json")
+            }
+
+            val body = JSONObject()
+                .put("code", pairingCode)
+                .put("deviceId", deviceId)
+                .toString()
+
+            connection.outputStream.use { output ->
+                output.write(body.toByteArray(Charsets.UTF_8))
+            }
+
+            val responseCode = connection.responseCode
+            val stream = if (responseCode in 200..299) {
+                connection.inputStream
+            } else {
+                connection.errorStream
+            }
+            val responseBody = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            connection.disconnect()
+
+            if (responseCode !in 200..299) {
+                val message = runCatching {
+                    JSONObject(responseBody).optString("error")
+                }.getOrNull().orEmpty()
+                throw IllegalStateException(
+                    if (message.isNotBlank()) message else "Pairing failed (HTTP $responseCode)"
+                )
+            }
+
+            val token = JSONObject(responseBody).optString("credential").trim()
+            require(token.length >= 32) { "Bridge returned an invalid credential" }
+            return token
+        }
+
+        fun websocketUrl(relayBaseUrl: String): String {
+            val base = relayBaseUrl.trim().trimEnd('/')
+            return when {
+                base.startsWith("https://") -> "wss://" + base.removePrefix("https://") + "/phone"
+                base.startsWith("http://") -> "ws://" + base.removePrefix("http://") + "/phone"
+                else -> throw IllegalArgumentException("Invalid remote bridge URL")
+            }
+        }
+    }
 
     private val gson = Gson()
     private val executor = Executors.newSingleThreadExecutor()
@@ -32,16 +92,17 @@ class RemoteBridgeClient(
     @Volatile private var socket: WebSocketClient? = null
 
     fun start() {
-        require(relayUrl.startsWith("wss://")) { "Remote bridge requires wss://" }
-        require(authToken.trim().length >= 32) { "Remote bridge token is missing or too short" }
+        require(credential.trim().length >= 32) {
+            "Remote bridge credential is missing or too short"
+        }
         stopped.set(false)
         connect()
     }
 
     private fun connect() {
         if (stopped.get()) return
-        val headers = mapOf("Authorization" to "Bearer ${authToken.trim()}")
-        val client = object : WebSocketClient(URI(relayUrl), headers) {
+        val headers = mapOf("Authorization" to "Bearer ${credential.trim()}")
+        val client = object : WebSocketClient(URI(websocketUrl(relayBaseUrl)), headers) {
             override fun onOpen(handshake: ServerHandshake?) {
                 onLog("Remote bridge connected")
             }
@@ -73,7 +134,10 @@ class RemoteBridgeClient(
             } else {
                 val service = MobileAccessibilityService.instance
                 if (service == null) {
-                    CommandResponse.error(request.id, "Accessibility service is not running. Enable it in Settings.")
+                    CommandResponse.error(
+                        request.id,
+                        "Accessibility service is not running. Enable it in Settings."
+                    )
                 } else {
                     service.handleCommand(request).copy(id = request.id)
                 }
@@ -86,7 +150,11 @@ class RemoteBridgeClient(
 
     private fun scheduleReconnect() {
         Thread {
-            try { Thread.sleep(3000) } catch (_: InterruptedException) { return@Thread }
+            try {
+                Thread.sleep(3_000)
+            } catch (_: InterruptedException) {
+                return@Thread
+            }
             connect()
         }.start()
     }
