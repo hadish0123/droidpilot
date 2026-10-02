@@ -52,6 +52,12 @@ class PrimeAgent(private val auth: OpenAIAuthManager) {
         chatHistory.clear()
     }
 
+    suspend fun warmUp() {
+        if (auth.isSignedIn()) {
+            ensureModel(preferFast = true)
+        }
+    }
+
     suspend fun testApiConnection(): String {
         val models = loadAvailableModels(forceRefresh = true)
         return "OpenAI API reachable • ${models.size} eligible model(s)"
