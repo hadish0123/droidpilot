@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Base64
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -13,14 +14,17 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.math.BigInteger
+import java.net.ConnectException
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.net.SocketTimeoutException
 import java.net.URI
 import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.net.UnknownHostException
 import java.security.KeyFactory
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -39,8 +43,9 @@ data class ChatGptProfile(
 /**
  * Official Sign in with ChatGPT flow for open-source/local clients.
  *
- * PRIME never stores an OpenAI API key. The user's authorized ChatGPT plan
- * supplies a short-lived OAuth access token for eligible Responses requests.
+ * The OAuth callback stays on 127.0.0.1 as required by OpenAI. After the
+ * browser reaches the loopback callback, PRIME deep-links back into the app
+ * and completes code exchange there.
  */
 class OpenAIAuthManager(private val context: Context) {
 
@@ -57,8 +62,10 @@ class OpenAIAuthManager(private val context: Context) {
         private const val SCOPES =
             "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
         private const val RECORD_KEY = "chatgpt_auth_record"
+        private const val PENDING_CLIENT_KEY = "chatgpt_pending_client_id"
         private const val HOST_PREFS = "prime_p6_host"
         private const val HOST_ID_KEY = "ext_agent_host_id"
+        private const val APP_RETURN_URI = "primep6://auth-complete"
     }
 
     private data class AuthRecord(
@@ -118,6 +125,17 @@ class OpenAIAuthManager(private val context: Context) {
         secureStore.putString(RECORD_KEY, json.toString())
     }
 
+    private fun pendingClientId(): String? =
+        secureStore.getString(PENDING_CLIENT_KEY)?.takeIf { it.startsWith("oaiapp_") }
+
+    private fun savePendingClientId(clientId: String) {
+        secureStore.putString(PENDING_CLIENT_KEY, clientId)
+    }
+
+    private fun clearPendingClientId() {
+        secureStore.remove(PENDING_CLIENT_KEY)
+    }
+
     private fun hostId(): String {
         val prefs = context.getSharedPreferences(HOST_PREFS, Context.MODE_PRIVATE)
         val existing = prefs.getString(HOST_ID_KEY, null)
@@ -148,14 +166,14 @@ class OpenAIAuthManager(private val context: Context) {
             r.scopes.contains(REQUIRED_SCOPE)
     }
 
-    /**
-     * Starts a loopback callback before opening the system browser.
-     * The caller only needs to launch the supplied URI.
-     */
-    suspend fun signIn(openBrowser: (Uri) -> Unit): ChatGptProfile = withContext(Dispatchers.IO) {
+    suspend fun signIn(
+        openBrowser: (Uri) -> Unit,
+        onCallbackReceived: (() -> Unit)? = null
+    ): ChatGptProfile = withContext(Dispatchers.IO) {
         val previous = loadRecord()
-        val returningClientId = previous?.clientId?.takeIf { it.startsWith("oaiapp_") }
-        val requestClientId = returningClientId ?: DYNAMIC_CLIENT_ID
+        val savedClientId = previous?.clientId?.takeIf { it.startsWith("oaiapp_") }
+            ?: pendingClientId()
+        val requestClientId = savedClientId ?: DYNAMIC_CLIENT_ID
 
         val state = randomUrlSafe(32)
         val nonce = randomUrlSafe(32)
@@ -182,7 +200,7 @@ class OpenAIAuthManager(private val context: Context) {
             .appendQueryParameter("code_challenge_method", "S256")
             .appendQueryParameter("code_challenge", challenge)
 
-        if (returningClientId == null) {
+        if (savedClientId == null) {
             builder.appendQueryParameter("agent_name_hint", APP_NAME)
         } else {
             previous?.idToken?.takeIf { it.isNotBlank() }?.let {
@@ -201,7 +219,8 @@ class OpenAIAuthManager(private val context: Context) {
             val socket = server.accept()
             socket.use {
                 val reader = BufferedReader(InputStreamReader(it.getInputStream(), Charsets.UTF_8))
-                val requestLine = reader.readLine() ?: throw IllegalStateException("Empty OAuth callback")
+                val requestLine = reader.readLine()
+                    ?: throw IllegalStateException("Empty OAuth callback")
                 val target = requestLine.split(" ").getOrNull(1)
                     ?: throw IllegalStateException("Invalid OAuth callback")
                 val callbackUri = URI("http://127.0.0.1" + target)
@@ -209,15 +228,39 @@ class OpenAIAuthManager(private val context: Context) {
 
                 val ok = params["state"] == state && params["error"].isNullOrBlank()
                 val body = if (ok) {
-                    "<html><body style='font-family:sans-serif;background:#090d18;color:#fff;padding:36px'><h2>PRIME connected</h2><p>You can return to the PRIME app.</p></body></html>"
+                    """
+                    <html>
+                      <head>
+                        <meta name="viewport" content="width=device-width, initial-scale=1" />
+                        <meta http-equiv="refresh" content="0;url=$APP_RETURN_URI" />
+                      </head>
+                      <body style="font-family:sans-serif;background:#070A12;color:#fff;padding:36px;text-align:center">
+                        <h2>PRIME authorization received</h2>
+                        <p>Returning to PRIME to finish the connection.</p>
+                        <p><a style="color:#7C5CFF" href="$APP_RETURN_URI">Return to PRIME</a></p>
+                      </body>
+                    </html>
+                    """.trimIndent()
                 } else {
-                    "<html><body style='font-family:sans-serif;padding:36px'><h2>PRIME sign-in failed</h2><p>Return to the app and try again.</p></body></html>"
+                    """
+                    <html>
+                      <body style="font-family:sans-serif;padding:36px;text-align:center">
+                        <h2>PRIME sign-in was not completed</h2>
+                        <p>Return to PRIME and try again.</p>
+                        <p><a href="$APP_RETURN_URI">Return to PRIME</a></p>
+                      </body>
+                    </html>
+                    """.trimIndent()
                 }
+
                 val bytes = body.toByteArray(Charsets.UTF_8)
                 val output = it.getOutputStream()
                 output.write(
-                    ("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n" +
-                        "Content-Length: " + bytes.size + "\r\nConnection: close\r\n\r\n")
+                    ("HTTP/1.1 200 OK\r\n" +
+                        "Content-Type: text/html; charset=utf-8\r\n" +
+                        "Cache-Control: no-store\r\n" +
+                        "Content-Length: " + bytes.size + "\r\n" +
+                        "Connection: close\r\n\r\n")
                         .toByteArray(Charsets.US_ASCII)
                 )
                 output.write(bytes)
@@ -228,6 +271,10 @@ class OpenAIAuthManager(private val context: Context) {
             server.close()
         }
 
+        withContext(Dispatchers.Main) {
+            onCallbackReceived?.invoke()
+        }
+
         if (callback["state"] != state) throw IllegalStateException("OAuth state mismatch")
         callback["error"]?.let { error ->
             throw IllegalStateException("ChatGPT authorization was not completed: " + error)
@@ -236,17 +283,21 @@ class OpenAIAuthManager(private val context: Context) {
         val code = callback["code"] ?: throw IllegalStateException("Authorization code missing")
         val callbackClientId = callback["client_id"]
 
-        val issuedClientId = if (returningClientId == null) {
+        val issuedClientId = if (savedClientId == null) {
             callbackClientId?.takeIf { it.startsWith("oaiapp_") }
                 ?: throw IllegalStateException("OpenAI did not return an issued client ID")
         } else {
-            if (!callbackClientId.isNullOrBlank() && callbackClientId != returningClientId) {
+            if (!callbackClientId.isNullOrBlank() && callbackClientId != savedClientId) {
                 throw IllegalStateException("Returned client ID does not match the saved registration")
             }
-            returningClientId
+            savedClientId
         }
 
-        val tokenJson = postForm(
+        // Keep the issued dynamic registration even if the network disappears
+        // between browser approval and token exchange.
+        savePendingClientId(issuedClientId)
+
+        val tokenJson = postFormWithRetry(
             TOKEN_ENDPOINT,
             mapOf(
                 "grant_type" to "authorization_code",
@@ -265,10 +316,7 @@ class OpenAIAuthManager(private val context: Context) {
         val subject = claims.optString("sub").takeIf { it.isNotBlank() }
             ?: throw IllegalStateException("ID token subject missing")
 
-        if (returningClientId != null &&
-            !previous?.subject.isNullOrBlank() &&
-            previous?.subject != subject
-        ) {
+        if (previous?.subject != null && previous.subject != subject) {
             throw IllegalStateException("Signed-in ChatGPT account does not match this registration")
         }
 
@@ -296,6 +344,7 @@ class OpenAIAuthManager(private val context: Context) {
             expiresAtMs = System.currentTimeMillis() + expiresIn * 1000L
         )
         saveRecord(record)
+        clearPendingClientId()
 
         ChatGptProfile(
             subject = subject,
@@ -308,7 +357,8 @@ class OpenAIAuthManager(private val context: Context) {
 
     suspend fun accessToken(): String = withContext(Dispatchers.IO) {
         refreshMutex.withLock {
-            val current = loadRecord() ?: throw IllegalStateException("Continue with ChatGPT first")
+            val current = loadRecord()
+                ?: throw IllegalStateException("Continue with ChatGPT first")
             val access = current.accessToken
             if (!access.isNullOrBlank() &&
                 current.expiresAtMs - System.currentTimeMillis() > 120_000L
@@ -321,7 +371,7 @@ class OpenAIAuthManager(private val context: Context) {
             val clientId = current.clientId
                 ?: throw IllegalStateException("Saved ChatGPT registration is incomplete")
 
-            val tokenJson = postForm(
+            val tokenJson = postFormWithRetry(
                 TOKEN_ENDPOINT,
                 mapOf(
                     "grant_type" to "refresh_token",
@@ -335,7 +385,8 @@ class OpenAIAuthManager(private val context: Context) {
                 ?: throw IllegalStateException("OpenAI refresh did not return an access token")
             val newRefresh = tokenJson.optString("refresh_token").takeIf { it.isNotBlank() }
                 ?: throw IllegalStateException("OpenAI refresh did not return a replacement refresh token")
-            val newIdToken = tokenJson.optString("id_token").takeIf { it.isNotBlank() } ?: current.idToken
+            val newIdToken = tokenJson.optString("id_token").takeIf { it.isNotBlank() }
+                ?: current.idToken
             val scopes = parseScopes(tokenJson.optString("scope")).ifEmpty { current.scopes }
             if (!scopes.contains(REQUIRED_SCOPE)) {
                 throw IllegalStateException("ChatGPT plan usage is no longer enabled for PRIME")
@@ -354,28 +405,28 @@ class OpenAIAuthManager(private val context: Context) {
         }
     }
 
-    /**
-     * Revokes the renewable session when possible, then clears local tokens.
-     * Registration identity/client ID is retained so the same account can reconnect.
-     */
     suspend fun signOut(): Boolean = withContext(Dispatchers.IO) {
         val current = loadRecord() ?: return@withContext true
         var remoteConfirmed = false
 
         try {
-            val discovery = getJson(DISCOVERY_ENDPOINT)
+            val discovery = getJsonWithRetry(DISCOVERY_ENDPOINT)
             val revocationEndpoint = discovery.optString("revocation_endpoint")
             val refresh = current.refreshToken
             val clientId = current.clientId
-            if (revocationEndpoint.isNotBlank() && !refresh.isNullOrBlank() && !clientId.isNullOrBlank()) {
-                postForm(
+            if (revocationEndpoint.isNotBlank() &&
+                !refresh.isNullOrBlank() &&
+                !clientId.isNullOrBlank()
+            ) {
+                postFormWithRetry(
                     revocationEndpoint,
                     mapOf(
                         "token" to refresh,
                         "token_type_hint" to "refresh_token",
                         "client_id" to clientId
                     ),
-                    allowEmptyBody = true
+                    allowEmptyBody = true,
+                    attempts = 2
                 )
                 remoteConfirmed = true
             }
@@ -401,7 +452,11 @@ class OpenAIAuthManager(private val context: Context) {
         context.startActivity(intent)
     }
 
-    private fun validateIdToken(token: String, expectedClientId: String, expectedNonce: String): JSONObject {
+    private fun validateIdToken(
+        token: String,
+        expectedClientId: String,
+        expectedNonce: String
+    ): JSONObject {
         val parts = token.split(".")
         if (parts.size != 3) throw IllegalStateException("Malformed ID token")
 
@@ -412,7 +467,7 @@ class OpenAIAuthManager(private val context: Context) {
         }
 
         val kid = header.optString("kid")
-        val jwks = getJson(JWKS_ENDPOINT).optJSONArray("keys")
+        val jwks = getJsonWithRetry(JWKS_ENDPOINT).optJSONArray("keys")
             ?: throw IllegalStateException("OpenAI JWKS response is invalid")
 
         var keyJson: JSONObject? = null
@@ -444,7 +499,9 @@ class OpenAIAuthManager(private val context: Context) {
         val aud = claims.opt("aud")
         val audienceMatches = when (aud) {
             is String -> aud == expectedClientId
-            is JSONArray -> (0 until aud.length()).any { aud.optString(it) == expectedClientId }
+            is JSONArray -> (0 until aud.length()).any {
+                aud.optString(it) == expectedClientId
+            }
             else -> false
         }
         if (!audienceMatches) throw IllegalStateException("ID token audience mismatch")
@@ -459,12 +516,27 @@ class OpenAIAuthManager(private val context: Context) {
         return claims
     }
 
-    private fun getJson(url: String): JSONObject {
+    private fun getJsonWithRetry(url: String, attempts: Int = 4): JSONObject {
+        var last: Exception? = null
+        repeat(attempts) { index ->
+            try {
+                return getJsonOnce(url)
+            } catch (e: Exception) {
+                if (!isRetryableNetworkError(e)) throw e
+                last = e
+                if (index < attempts - 1) Thread.sleep(retryDelayMs(index))
+            }
+        }
+        throw networkFailure(last)
+    }
+
+    private fun getJsonOnce(url: String): JSONObject {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = "GET"
         conn.connectTimeout = 15_000
         conn.readTimeout = 20_000
         conn.setRequestProperty("Accept", "application/json")
+        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.1")
         return try {
             val status = conn.responseCode
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
@@ -478,14 +550,35 @@ class OpenAIAuthManager(private val context: Context) {
         }
     }
 
-    private fun postForm(
+    private fun postFormWithRetry(
         url: String,
         values: Map<String, String>,
-        allowEmptyBody: Boolean = false
+        allowEmptyBody: Boolean = false,
+        attempts: Int = 4
+    ): JSONObject {
+        var last: Exception? = null
+        repeat(attempts) { index ->
+            try {
+                return postFormOnce(url, values, allowEmptyBody)
+            } catch (e: Exception) {
+                if (!isRetryableNetworkError(e)) throw e
+                last = e
+                if (index < attempts - 1) Thread.sleep(retryDelayMs(index))
+            }
+        }
+        throw networkFailure(last)
+    }
+
+    private fun postFormOnce(
+        url: String,
+        values: Map<String, String>,
+        allowEmptyBody: Boolean
     ): JSONObject {
         val payload = values.entries.joinToString("&") {
-            URLEncoder.encode(it.key, "UTF-8") + "=" + URLEncoder.encode(it.value, "UTF-8")
+            URLEncoder.encode(it.key, "UTF-8") + "=" +
+                URLEncoder.encode(it.value, "UTF-8")
         }
+
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.doOutput = true
@@ -493,12 +586,16 @@ class OpenAIAuthManager(private val context: Context) {
         conn.readTimeout = 30_000
         conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
         conn.setRequestProperty("Accept", "application/json")
-        conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.1")
+        conn.outputStream.use {
+            it.write(payload.toByteArray(Charsets.UTF_8))
+        }
 
         return try {
             val status = conn.responseCode
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
             val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+
             if (status !in 200..299) {
                 val diagnostic = try {
                     val j = JSONObject(body)
@@ -510,10 +607,50 @@ class OpenAIAuthManager(private val context: Context) {
                 }
                 throw IllegalStateException(diagnostic + " (HTTP " + status + ")")
             }
+
             if (body.isBlank() && allowEmptyBody) JSONObject() else JSONObject(body)
         } finally {
             conn.disconnect()
         }
+    }
+
+    private fun isRetryableNetworkError(error: Throwable?): Boolean {
+        var current = error
+        while (current != null) {
+            if (current is UnknownHostException ||
+                current is ConnectException ||
+                current is SocketTimeoutException
+            ) return true
+            current = current.cause
+        }
+        return false
+    }
+
+    private fun networkFailure(last: Exception?): IllegalStateException {
+        val dns = generateSequence<Throwable?>(last) { it.cause }
+            .any { it is UnknownHostException }
+
+        return if (dns) {
+            IllegalStateException(
+                "PRIME_NETWORK_DNS: PRIME itself cannot resolve auth.openai.com. " +
+                    "If a VPN/proxy is enabled, make sure PRIME is included in that VPN, " +
+                    "then retry the ChatGPT connection.",
+                last
+            )
+        } else {
+            IllegalStateException(
+                "PRIME_NETWORK_OPENAI: PRIME could not reach OpenAI after several retries. " +
+                    "Check the phone network/VPN and try again.",
+                last
+            )
+        }
+    }
+
+    private fun retryDelayMs(index: Int): Long = when (index) {
+        0 -> 1_000L
+        1 -> 2_000L
+        2 -> 4_000L
+        else -> 6_000L
     }
 
     private fun parseQuery(rawQuery: String): Map<String, String> {
@@ -537,8 +674,14 @@ class OpenAIAuthManager(private val context: Context) {
     }
 
     private fun base64Url(bytes: ByteArray): String =
-        Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        Base64.encodeToString(
+            bytes,
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
 
     private fun base64UrlDecode(value: String): ByteArray =
-        Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        Base64.decode(
+            value,
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
 }
