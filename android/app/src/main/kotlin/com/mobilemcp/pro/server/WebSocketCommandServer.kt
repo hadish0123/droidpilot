@@ -16,7 +16,7 @@ class WebSocketCommandServer(
     port: Int,
     private val onLog: (String) -> Unit,
     private val onConnectionChange: (Int) -> Unit
-) : WebSocketServer(InetSocketAddress(port)) {
+) : WebSocketServer(InetSocketAddress("127.0.0.1", port)) {
 
     companion object {
         private const val TAG = "WSCommandServer"
@@ -105,7 +105,7 @@ class WebSocketCommandServer(
 
     override fun onStart() {
         Log.i(TAG, "WebSocket server started on port ${this.port}")
-        onLog("Server started on port ${this.port}")
+        onLog("Server started securely on 127.0.0.1:${this.port}")\n        onLog("Bridge token (this session only): $authToken")
         connectionLostTimeout = 60
     }
 
