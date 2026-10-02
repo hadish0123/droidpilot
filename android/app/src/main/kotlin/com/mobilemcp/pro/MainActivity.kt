@@ -34,6 +34,7 @@ import com.mobilemcp.pro.model.CommandRequest
 import com.mobilemcp.pro.server.WebSocketCommandServer
 import com.mobilemcp.pro.service.ConnectionForegroundService
 import com.mobilemcp.pro.service.MobileAccessibilityService
+import com.mobilemcp.pro.service.VoiceSessionForegroundService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -618,6 +619,14 @@ class MainActivity : AppCompatActivity() {
             return
         }
         voiceModeActive = true
+        try {
+            startForegroundService(
+                Intent(this, VoiceSessionForegroundService::class.java)
+            )
+        } catch (_: Exception) {
+            // Voice still works while PRIME is foreground; Android may reject
+            // the cross-app microphone foreground service on some devices.
+        }
         binding.voiceOverlay.visibility = View.VISIBLE
         binding.tvVoiceStatus.text = "Listening…"
         startVoiceInput(autoSend = true)
@@ -626,6 +635,7 @@ class MainActivity : AppCompatActivity() {
     private fun exitVoiceMode() {
         voiceModeActive = false
         voiceAutoSend = false
+        stopService(Intent(this, VoiceSessionForegroundService::class.java))
         speechRecognizer?.cancel()
         textToSpeech?.stop()
         binding.voiceOverlay.visibility = View.GONE
@@ -990,6 +1000,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         if (isServerRunning) stopServer()
+        stopService(Intent(this, VoiceSessionForegroundService::class.java))
         voiceModeActive = false
         speechRecognizer?.destroy()
         speechRecognizer = null
