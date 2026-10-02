@@ -1338,12 +1338,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun pairRemoteBridge() {
-        val code = binding.etRemotePairingCode.text?.toString()?.trim().orEmpty()
-        if (!code.matches(Regex("\\d{6}"))) {
-            binding.etRemotePairingCode.error = "کد اتصال باید ۶ رقم باشد"
-            return
-        }
-
         binding.btnPairRemote.isEnabled = false
         binding.tvRemoteStatus.setText(R.string.ui_remote_pairing)
 
@@ -1352,22 +1346,21 @@ class MainActivity : AppCompatActivity() {
                 val pairing = withContext(Dispatchers.IO) {
                     RemoteBridgeClient.pair(
                         RemoteBridgeSecurity.DEFAULT_RELAY_URL,
-                        code,
-                        remoteBridgeSecurity.getOrCreateDeviceId()
+                        remoteBridgeSecurity.getOrCreateDeviceId(),
+                        bridgeAuthToken
                     )
                 }
                 remoteBridgeSecurity.saveCredential(pairing.credential)
                 remoteBridgeSecurity.saveMcpUrl(pairing.mcpUrl)
                 remoteBridgeSecurity.setEnabled(true)
-                binding.etRemotePairingCode.setText("")
                 startRemoteBridgeService()
                 updateRemoteBridgeUI()
-                appendLog("PRIME remote bridge paired and started")
+                appendLog("PRIME remote bridge registered and started")
             } catch (e: Exception) {
                 remoteBridgeSecurity.setEnabled(false)
                 binding.tvRemoteStatus.text =
                     "اتصال راه دور کامل نشد: " + (e.message ?: "خطای نامشخص")
-                appendLog("Remote bridge pairing failed: " + (e.message ?: "unknown"))
+                appendLog("Remote bridge registration failed: " + (e.message ?: "unknown"))
             } finally {
                 binding.btnPairRemote.isEnabled = true
             }
