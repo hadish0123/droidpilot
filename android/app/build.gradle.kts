@@ -11,8 +11,8 @@ android {
         applicationId = "com.mobilemcp.pro"
         minSdk = 30
         targetSdk = 34
-        versionCode = 60001
-        versionName = "6.0.1"
+        versionCode = 60002
+        versionName = "6.0.2"
     }
 
     buildTypes {
