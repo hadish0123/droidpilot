@@ -84,6 +84,12 @@ class OpenAIAuthManager(private val context: Context) {
     private val refreshMutex = Mutex()
     private val random = SecureRandom()
 
+    @Volatile
+    private var memoryAccessToken: String? = null
+
+    @Volatile
+    private var memoryAccessTokenExpiresAtMs: Long = 0L
+
     private fun loadRecord(): AuthRecord? {
         val raw = secureStore.getString(RECORD_KEY) ?: return null
         return try {
@@ -355,6 +361,8 @@ class OpenAIAuthManager(private val context: Context) {
             expiresAtMs = System.currentTimeMillis() + expiresIn * 1000L
         )
         saveRecord(record)
+        memoryAccessToken = accessToken
+        memoryAccessTokenExpiresAtMs = record.expiresAtMs
         clearPendingClientId()
 
         ChatGptProfile(
@@ -367,13 +375,33 @@ class OpenAIAuthManager(private val context: Context) {
     }
 
     suspend fun accessToken(): String = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val inMemory = memoryAccessToken
+        if (
+            !inMemory.isNullOrBlank() &&
+            memoryAccessTokenExpiresAtMs - now > 120_000L
+        ) {
+            return@withContext inMemory
+        }
+
         refreshMutex.withLock {
+            val secondMemoryCheck = memoryAccessToken
+            if (
+                !secondMemoryCheck.isNullOrBlank() &&
+                memoryAccessTokenExpiresAtMs -
+                    System.currentTimeMillis() > 120_000L
+            ) {
+                return@withLock secondMemoryCheck
+            }
+
             val current = loadRecord()
                 ?: throw IllegalStateException("Continue with ChatGPT first")
             val access = current.accessToken
             if (!access.isNullOrBlank() &&
                 current.expiresAtMs - System.currentTimeMillis() > 120_000L
             ) {
+                memoryAccessToken = access
+                memoryAccessTokenExpiresAtMs = current.expiresAtMs
                 return@withLock access
             }
 
@@ -412,6 +440,8 @@ class OpenAIAuthManager(private val context: Context) {
                     tokenJson.optLong("expires_in", 3600L) * 1000L
             )
             saveRecord(updated)
+            memoryAccessToken = newAccess
+            memoryAccessTokenExpiresAtMs = updated.expiresAtMs
             newAccess
         }
     }
@@ -444,6 +474,9 @@ class OpenAIAuthManager(private val context: Context) {
         } catch (_: Exception) {
             remoteConfirmed = false
         }
+
+        memoryAccessToken = null
+        memoryAccessTokenExpiresAtMs = 0L
 
         saveRecord(
             current.copy(
@@ -547,7 +580,7 @@ class OpenAIAuthManager(private val context: Context) {
         conn.connectTimeout = 15_000
         conn.readTimeout = 20_000
         conn.setRequestProperty("Accept", "application/json")
-        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.1")
+        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.7")
         return try {
             val status = conn.responseCode
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
@@ -597,7 +630,7 @@ class OpenAIAuthManager(private val context: Context) {
         conn.readTimeout = 30_000
         conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
         conn.setRequestProperty("Accept", "application/json")
-        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.1")
+        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.7")
         conn.outputStream.use {
             it.write(payload.toByteArray(Charsets.UTF_8))
         }
