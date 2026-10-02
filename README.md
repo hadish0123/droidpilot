@@ -160,6 +160,9 @@ The built-in PRIME chat/voice path does **not** require the MCP bridge.
                     │                              │
 Voice ─ Speech STT ─┤  Chat / Agent Orchestrator   │
 Text ───────────────┤            │                 │
+                    │      Context Manager         │
+                    │  budget · clipping · recent  │
+                    │            │                 │
                     │            ▼                 │
                     │      AI Provider boundary    │
                     │            │                 │
@@ -190,6 +193,11 @@ Phone actions pass through `PrimeToolRegistry` and `PrimeToolRuntime` before the
 reach `PhoneController`. The runtime rejects unregistered commands, assigns a
 minimum `ToolRisk`, elevates semantic send/delete/payment-style clicks, and blocks
 sensitive or destructive actions until the user has confirmed the task.
+
+`PrimeContextManager` owns only the bounded in-memory provider window; the full
+conversation remains in `PrimeChatStore`. It limits request history by message
+count and a conservative token estimate, clips oversized messages while preserving
+both ends, and keeps recent context for long-running chats.
 
 ## Identity
 

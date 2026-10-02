@@ -325,4 +325,38 @@ class PrimeAgentSessionTest {
     }
 
 
+    @Test fun longConversationSendsABoundedRecentProviderWindow() = runBlocking {
+        ApiFixture().use { api ->
+            val agent = api.agent()
+            val history = mutableListOf<Pair<String, String>>()
+            repeat(100) { index ->
+                history += "user" to "user-history-$index " + "متن ".repeat(8)
+                history += "assistant" to "assistant-history-$index " + "پاسخ ".repeat(8)
+            }
+            agent.restoreConversation(history)
+            api.answers += "پاسخ عادی"
+
+            val outcome = turn(
+                agent,
+                "فقط یک پاسخ کوتاه بده",
+                { _, _ -> error("Normal conversation must not execute a phone tool") }
+            )
+
+            assertEquals("پاسخ عادی", outcome.text)
+            assertEquals(1, api.requests.size)
+
+            val input = api.requests.single().getJSONArray("input")
+            assertTrue(input.length() <= 21)
+            assertEquals(
+                "فقط یک پاسخ کوتاه بده",
+                input.getJSONObject(input.length() - 1).getString("content")
+            )
+
+            val serialized = input.toString()
+            assertTrue(serialized.contains("assistant-history-99"))
+            assertFalse(serialized.contains("user-history-0"))
+        }
+    }
+
+
 }
