@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
+    <!-- Production default: reject cleartext network traffic. The device bridge
+         is an inbound loopback WebSocket server and does not require a global
+         Android cleartext exception. -->
+    <base-config cleartextTrafficPermitted="false" />
 </network-security-config>
