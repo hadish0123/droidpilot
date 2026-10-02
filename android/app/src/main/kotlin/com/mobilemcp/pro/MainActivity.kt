@@ -66,6 +66,7 @@ class MainActivity : AppCompatActivity() {
     private var voiceModeActive = false
     private var voiceAutoSend = false
     private var pendingVoiceAutoSend = false
+    private var pendingStartPersistentVoice = false
 
     private var wsServer: WebSocketCommandServer? = null
     private var isServerRunning = false
@@ -107,6 +108,18 @@ class MainActivity : AppCompatActivity() {
         updateAccessibilityStatus()
         updateIPAddress()
         updateAuthUI()
+
+        if (
+            pendingStartPersistentVoice &&
+            Settings.canDrawOverlays(this) &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingStartPersistentVoice = false
+            launchPersistentVoiceOverlay()
+        }
     }
 
     private fun setupUI() {
@@ -685,17 +698,74 @@ class MainActivity : AppCompatActivity() {
             binding.drawerLayout.openDrawer(GravityCompat.START)
             return
         }
-        voiceModeActive = true
-        binding.etVoiceMessage.setText("")
-        binding.voiceOverlay.visibility = View.VISIBLE
-        binding.tvVoiceStatus.text = "Listening…"
-        startVoiceInput(autoSend = true)
+
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingStartPersistentVoice = true
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                REQUEST_RECORD_AUDIO
+            )
+            return
+        }
+
+        if (!Settings.canDrawOverlays(this)) {
+            pendingStartPersistentVoice = true
+            AlertDialog.Builder(this)
+                .setTitle("اجازه PRIME Voice")
+                .setMessage(
+                    "برای اینکه Voice Mode هنگام رفتن داخل تلگرام، سایت یا هر برنامه‌ای روی صفحه بماند، " +
+                        "یک‌بار اجازه «Display over other apps» را برای PRIME فعال کن."
+                )
+                .setPositiveButton("فعال کردن") { _, _ ->
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:$packageName")
+                        )
+                    )
+                }
+                .setNegativeButton("لغو", null)
+                .show()
+            return
+        }
+
+        launchPersistentVoiceOverlay()
+    }
+
+    private fun launchPersistentVoiceOverlay() {
+        pendingStartPersistentVoice = false
+        binding.voiceOverlay.visibility = View.GONE
+
+        val intent = Intent(
+            this,
+            VoiceSessionForegroundService::class.java
+        ).apply {
+            action = VoiceSessionForegroundService.ACTION_START
+        }
+
+        startForegroundService(intent)
+        binding.tvAgentStatus.text = "Persistent PRIME Voice active"
     }
 
     private fun exitVoiceMode() {
         voiceModeActive = false
         voiceAutoSend = false
-        stopService(Intent(this, VoiceSessionForegroundService::class.java))
+        pendingStartPersistentVoice = false
+
+        val intent = Intent(
+            this,
+            VoiceSessionForegroundService::class.java
+        ).apply {
+            action = VoiceSessionForegroundService.ACTION_STOP
+        }
+
+        startService(intent)
         speechRecognizer?.cancel()
         textToSpeech?.stop()
         binding.voiceOverlay.visibility = View.GONE
@@ -834,10 +904,15 @@ class MainActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_RECORD_AUDIO &&
+        if (
+            requestCode == REQUEST_RECORD_AUDIO &&
             grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
         ) {
-            startVoiceInput(autoSend = pendingVoiceAutoSend)
+            if (pendingStartPersistentVoice) {
+                enterVoiceMode()
+            } else {
+                startVoiceInput(autoSend = pendingVoiceAutoSend)
+            }
         }
     }
 
@@ -1078,7 +1153,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         if (isServerRunning) stopServer()
-        stopService(Intent(this, VoiceSessionForegroundService::class.java))
         voiceModeActive = false
         speechRecognizer?.destroy()
         speechRecognizer = null

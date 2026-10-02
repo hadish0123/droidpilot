@@ -57,6 +57,33 @@ class MobileAccessibilityService : AccessibilityService() {
         Log.i(TAG, "Accessibility service destroyed")
     }
 
+    /**
+     * When PRIME Voice is displayed as TYPE_APPLICATION_OVERLAY, Android may
+     * report PRIME itself as the active window. Phone automation must instead
+     * inspect the highest-layer interactive window owned by another package.
+     */
+    private fun targetRootInActiveWindow(): AccessibilityNodeInfo? {
+        val candidates = windows
+            .sortedByDescending { it.layer }
+
+        for (window in candidates) {
+            val root = window.root ?: continue
+            val owner = root.packageName?.toString().orEmpty()
+            if (owner.isNotBlank() && owner != packageName) {
+                return root
+            }
+            root.recycle()
+        }
+
+        val fallback = super.getRootInActiveWindow() ?: return null
+        return if (fallback.packageName?.toString() != packageName) {
+            fallback
+        } else {
+            fallback.recycle()
+            null
+        }
+    }
+
     fun handleCommand(request: CommandRequest): CommandResponse {
         return try {
             when (request.command) {
@@ -209,8 +236,13 @@ class MobileAccessibilityService : AccessibilityService() {
 
     private fun executeTypeText(params: JsonObject?): CommandResponse {
         val text = params?.get("text")?.asString ?: return CommandResponse.error(null, "Missing text")
-        val focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-            ?: return CommandResponse.error(null, "No focused input field")
+        val root = targetRootInActiveWindow()
+            ?: return CommandResponse.error(null, "No target app window")
+        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        if (focused == null) {
+            root.recycle()
+            return CommandResponse.error(null, "No focused input field")
+        }
 
         val args = android.os.Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
@@ -218,6 +250,7 @@ class MobileAccessibilityService : AccessibilityService() {
         }
         val result = focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
         focused.recycle()
+        root.recycle()
 
         return if (result) {
             CommandResponse.success(null, JsonObject().apply { addProperty("typed", text) })
@@ -227,18 +260,38 @@ class MobileAccessibilityService : AccessibilityService() {
     }
 
     private fun executeSetText(params: JsonObject?): CommandResponse {
-        val text = params?.get("text")?.asString ?: return CommandResponse.error(null, "Missing text")
-        val focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-            ?: return CommandResponse.error(null, "No focused input field")
+        val text = params?.get("text")?.asString
+            ?: return CommandResponse.error(null, "Missing text")
+
+        val root = targetRootInActiveWindow()
+            ?: return CommandResponse.error(null, "No target app window")
+
+        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        if (focused == null) {
+            root.recycle()
+            return CommandResponse.error(null, "No focused input field")
+        }
 
         val args = android.os.Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                text
+            )
         }
-        val result = focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+
+        val result = focused.performAction(
+            AccessibilityNodeInfo.ACTION_SET_TEXT,
+            args
+        )
+
         focused.recycle()
+        root.recycle()
 
         return if (result) {
-            CommandResponse.success(null, JsonObject().apply { addProperty("text_set", text) })
+            CommandResponse.success(
+                null,
+                JsonObject().apply { addProperty("text_set", text) }
+            )
         } else {
             CommandResponse.error(null, "Failed to set text")
         }
@@ -275,7 +328,7 @@ class MobileAccessibilityService : AccessibilityService() {
 
     private fun executeGetUITree(params: JsonObject?): CommandResponse {
         val maxDepth = params?.get("maxDepth")?.asInt ?: 15
-        val root = rootInActiveWindow ?: return CommandResponse.error(null, "No active window")
+        val root = targetRootInActiveWindow() ?: return CommandResponse.error(null, "No active window")
 
         val tree = buildUITree(root, 0, maxDepth)
         root.recycle()
@@ -285,7 +338,7 @@ class MobileAccessibilityService : AccessibilityService() {
     }
 
     private fun executeFindElement(params: JsonObject?): CommandResponse {
-        val root = rootInActiveWindow ?: return CommandResponse.error(null, "No active window")
+        val root = targetRootInActiveWindow() ?: return CommandResponse.error(null, "No active window")
 
         val results = mutableListOf<UINode>()
         val text = params?.get("text")?.asString
@@ -305,7 +358,7 @@ class MobileAccessibilityService : AccessibilityService() {
     }
 
     private fun executeClickElement(params: JsonObject?): CommandResponse {
-        val root = rootInActiveWindow ?: return CommandResponse.error(null, "No active window")
+        val root = targetRootInActiveWindow() ?: return CommandResponse.error(null, "No active window")
 
         val text = params?.get("text")?.asString
         val id = params?.get("id")?.asString
@@ -351,7 +404,7 @@ class MobileAccessibilityService : AccessibilityService() {
 
         val startTime = System.currentTimeMillis()
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            val root = rootInActiveWindow
+            val root = targetRootInActiveWindow()
             if (root != null) {
                 val node = findFirstElement(root, text, id, className, contentDesc)
                 if (node != null) {
@@ -376,12 +429,24 @@ class MobileAccessibilityService : AccessibilityService() {
     }
 
     private fun executeGetFocused(): CommandResponse {
-        val focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        val root = targetRootInActiveWindow()
+            ?: return CommandResponse.success(
+                null,
+                JsonObject().apply { addProperty("focused", false) }
+            )
+
+        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
         if (focused == null) {
-            return CommandResponse.success(null, JsonObject().apply { addProperty("focused", false) })
+            root.recycle()
+            return CommandResponse.success(
+                null,
+                JsonObject().apply { addProperty("focused", false) }
+            )
         }
+
         val uiNode = nodeToUINode(focused)
         focused.recycle()
+        root.recycle()
         return CommandResponse.success(null, JsonObject().apply {
             addProperty("focused", true)
             add("element", gson.toJsonTree(uiNode))
@@ -390,12 +455,12 @@ class MobileAccessibilityService : AccessibilityService() {
 
     private fun executeGetNotifications(): CommandResponse {
         // Use the accessibility events - we have access through service info
-        val root = rootInActiveWindow
+        val root = targetRootInActiveWindow()
         // Trigger notifications panel
         performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
         Thread.sleep(500)
 
-        val notifRoot = rootInActiveWindow
+        val notifRoot = targetRootInActiveWindow()
         val results = mutableListOf<UINode>()
         if (notifRoot != null) {
             findElements(notifRoot, null, null, "android.widget.FrameLayout", null, results, 50)
