@@ -19,4 +19,8 @@
     <string name="enable_control">Enable</string>
     <string name="message_hint">Ask PRIME or give a phone command…</string>
     <string name="voice_command">Voice command</string>
+    <string name="voice_notification_channel_name">PRIME Voice</string>
+    <string name="voice_notification_channel_description">Keeps a user-started PRIME voice session active while PRIME operates other apps</string>
+    <string name="voice_notification_title">PRIME P6 Voice is active</string>
+    <string name="voice_notification_text">Listening can continue while PRIME works across apps</string>
 </resources>
