@@ -52,6 +52,18 @@ class PrimeAgent(private val auth: OpenAIAuthManager) {
         chatHistory.clear()
     }
 
+    fun restoreConversation(lines: List<Pair<String, String>>) {
+        chatHistory.clear()
+        lines.takeLast(12).forEach { (role, content) ->
+            if (
+                (role == "user" || role == "assistant") &&
+                content.isNotBlank()
+            ) {
+                chatHistory += ChatLine(role, content)
+            }
+        }
+    }
+
     suspend fun warmUp() {
         if (auth.isSignedIn()) {
             ensureModel(preferFast = true)

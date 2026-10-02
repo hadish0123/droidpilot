@@ -66,10 +66,33 @@ class MobileAccessibilityService : AccessibilityService() {
         val candidates = windows
             .sortedByDescending { it.layer }
 
+        // Prefer an actual application window. This avoids accidentally
+        // targeting PRIME's overlay, the keyboard, notification shade, etc.
         for (window in candidates) {
+            if (
+                window.type !=
+                android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
+            ) {
+                continue
+            }
+
             val root = window.root ?: continue
             val owner = root.packageName?.toString().orEmpty()
             if (owner.isNotBlank() && owner != packageName) {
+                return root
+            }
+            root.recycle()
+        }
+
+        // Fallback for manufacturer-specific window classifications.
+        for (window in candidates) {
+            val root = window.root ?: continue
+            val owner = root.packageName?.toString().orEmpty()
+            if (
+                owner.isNotBlank() &&
+                owner != packageName &&
+                !owner.contains("inputmethod", ignoreCase = true)
+            ) {
                 return root
             }
             root.recycle()

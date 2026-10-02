@@ -9,6 +9,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
+import android.media.AudioAttributes
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -35,6 +37,7 @@ import com.google.gson.JsonParser
 import com.mobilemcp.pro.MainActivity
 import com.mobilemcp.pro.OpenAIAuthManager
 import com.mobilemcp.pro.PrimeActionResult
+import com.mobilemcp.pro.PrimeChatStore
 import com.mobilemcp.pro.PrimeAgent
 import com.mobilemcp.pro.R
 import com.mobilemcp.pro.model.CommandRequest
@@ -78,6 +81,8 @@ class VoiceSessionForegroundService : Service() {
 
     private lateinit var authManager: OpenAIAuthManager
     private lateinit var primeAgent: PrimeAgent
+    private lateinit var chatStore: PrimeChatStore
+    private var activeChatId: Long = -1L
     private lateinit var windowManager: WindowManager
 
     private var overlayView: View? = null
@@ -92,6 +97,8 @@ class VoiceSessionForegroundService : Service() {
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
+    private var ttsReady = false
+    private var pendingSpeech: String? = null
 
     private var sessionActive = false
     private var isBusy = false
@@ -102,6 +109,9 @@ class VoiceSessionForegroundService : Service() {
 
         authManager = OpenAIAuthManager(applicationContext)
         primeAgent = PrimeAgent(authManager)
+        chatStore = PrimeChatStore(applicationContext)
+        activeChatId = resolveActiveChatId()
+        restoreActiveChatContext()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
         createNotificationChannel()
@@ -330,13 +340,29 @@ class VoiceSessionForegroundService : Service() {
 
         editMessage?.setText("")
         setOverlayFocusable(false)
-        handleInput(text)
+        scope.launch {
+            delay(220)
+            handleInput(text)
+        }
     }
 
     private fun setupTextToSpeech() {
-        textToSpeech = TextToSpeech(this) { status ->
+        textToSpeech = TextToSpeech(applicationContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
+                ttsReady = true
+
                 textToSpeech?.setSpeechRate(1.0f)
+                textToSpeech?.setPitch(1.0f)
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    textToSpeech?.setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                }
+
                 textToSpeech?.setOnUtteranceProgressListener(
                     object : UtteranceProgressListener() {
                         override fun onStart(utteranceId: String?) {
@@ -347,8 +373,11 @@ class VoiceSessionForegroundService : Service() {
 
                         override fun onError(utteranceId: String?) {
                             scope.launch {
+                                updateStatus(
+                                    "Voice output failed • tap mic or type again"
+                                )
                                 if (sessionActive && !isBusy) {
-                                    delay(300)
+                                    delay(500)
                                     startListening()
                                 }
                             }
@@ -364,18 +393,38 @@ class VoiceSessionForegroundService : Service() {
                         }
                     }
                 )
+
+                val queued = pendingSpeech
+                pendingSpeech = null
+                if (!queued.isNullOrBlank()) {
+                    scope.launch {
+                        delay(80)
+                        speak(queued)
+                    }
+                }
+            } else {
+                ttsReady = false
+                updateStatus("Voice output is unavailable on this phone")
             }
         }
     }
 
     private fun speak(text: String) {
+        if (text.isBlank()) {
+            scope.launch { startListening() }
+            return
+        }
+
+        if (!ttsReady) {
+            pendingSpeech = text
+            updateStatus("Preparing PRIME voice…")
+            return
+        }
+
         val tts = textToSpeech
         if (tts == null) {
-            updateStatus(text.take(160))
-            scope.launch {
-                delay(400)
-                startListening()
-            }
+            pendingSpeech = text
+            updateStatus("Preparing PRIME voice…")
             return
         }
 
@@ -393,12 +442,35 @@ class VoiceSessionForegroundService : Service() {
             tts.setLanguage(Locale.getDefault())
         }
 
-        tts.speak(
+        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (
+            audio.getStreamVolume(AudioManager.STREAM_MUSIC) == 0
+        ) {
+            updateStatus("Media volume is muted")
+        }
+
+        val params = Bundle().apply {
+            putInt(
+                TextToSpeech.Engine.KEY_PARAM_STREAM,
+                AudioManager.STREAM_MUSIC
+            )
+            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+        }
+
+        val resultCode = tts.speak(
             text.take(2500),
             TextToSpeech.QUEUE_FLUSH,
-            null,
+            params,
             "prime-overlay-" + System.currentTimeMillis()
         )
+
+        if (resultCode == TextToSpeech.ERROR) {
+            updateStatus("Voice output failed • check Text-to-Speech settings")
+            scope.launch {
+                delay(650)
+                startListening()
+            }
+        }
     }
 
     private fun ensureSpeechRecognizer(): Boolean {
@@ -543,6 +615,9 @@ class VoiceSessionForegroundService : Service() {
     private fun handleInput(input: String) {
         if (input.isBlank() || isBusy) return
 
+        ensureActiveChat()
+        chatStore.appendMessage(activeChatId, "user", input)
+
         setOverlayFocusable(false)
         speechRecognizer?.cancel()
         textToSpeech?.stop()
@@ -597,6 +672,12 @@ class VoiceSessionForegroundService : Service() {
                 if (outcome.needsConfirmation) {
                     pendingConfirmationTask = task
                 }
+
+                chatStore.appendMessage(
+                    activeChatId,
+                    "assistant",
+                    outcome.text
+                )
 
                 isBusy = false
                 setControlsEnabled(true)
@@ -954,6 +1035,68 @@ class VoiceSessionForegroundService : Service() {
             "no",
             "stop"
         )
+    }
+
+    private fun resolveActiveChatId(): Long {
+        val prefs = getSharedPreferences(
+            PrimeChatStore.PREFS,
+            Context.MODE_PRIVATE
+        )
+
+        val saved = prefs.getLong(
+            PrimeChatStore.ACTIVE_CHAT_ID,
+            -1L
+        )
+
+        if (saved > 0L && chatStore.chatExists(saved)) {
+            return saved
+        }
+
+        val existing = chatStore.listChats().firstOrNull()?.id
+        val resolved = existing ?: chatStore.createChat()
+
+        prefs.edit()
+            .putLong(PrimeChatStore.ACTIVE_CHAT_ID, resolved)
+            .apply()
+
+        return resolved
+    }
+
+    private fun ensureActiveChat() {
+        val prefs = getSharedPreferences(
+            PrimeChatStore.PREFS,
+            Context.MODE_PRIVATE
+        )
+        val saved = prefs.getLong(
+            PrimeChatStore.ACTIVE_CHAT_ID,
+            activeChatId
+        )
+
+        if (
+            saved > 0L &&
+            saved != activeChatId &&
+            chatStore.chatExists(saved)
+        ) {
+            activeChatId = saved
+            restoreActiveChatContext()
+            return
+        }
+
+        if (activeChatId <= 0L || !chatStore.chatExists(activeChatId)) {
+            activeChatId = resolveActiveChatId()
+            restoreActiveChatContext()
+        }
+    }
+
+    private fun restoreActiveChatContext() {
+        if (activeChatId <= 0L || !chatStore.chatExists(activeChatId)) {
+            return
+        }
+
+        val lines = chatStore.messages(activeChatId)
+            .map { it.role to it.content }
+
+        primeAgent.restoreConversation(lines)
     }
 
     private fun setControlsEnabled(enabled: Boolean) {

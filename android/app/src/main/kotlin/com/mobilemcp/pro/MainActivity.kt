@@ -26,7 +26,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.view.GravityCompat
+import com.google.android.material.button.MaterialButton
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.mobilemcp.pro.databinding.ActivityMainBinding
@@ -56,6 +56,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var authManager: OpenAIAuthManager
     private lateinit var primeAgent: PrimeAgent
+    private lateinit var chatStore: PrimeChatStore
+    private var currentChatId: Long = -1L
+    private var renderedMessageCount: Int = 0
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var textToSpeech: TextToSpeech? = null
@@ -79,12 +82,13 @@ class MainActivity : AppCompatActivity() {
 
         authManager = OpenAIAuthManager(applicationContext)
         primeAgent = PrimeAgent(authManager)
+        chatStore = PrimeChatStore(applicationContext)
 
         setupTextToSpeech()
         setupUI()
         updateAccessibilityStatus()
         updateAuthUI()
-        startFreshChat(showGreeting = true)
+        openInitialChat()
         warmUpPrime()
 
         if (intent?.data?.scheme == "primep6") {
@@ -108,6 +112,7 @@ class MainActivity : AppCompatActivity() {
         updateAccessibilityStatus()
         updateIPAddress()
         updateAuthUI()
+        syncChatIfChanged()
 
         if (
             pendingStartPersistentVoice &&
@@ -124,9 +129,39 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupUI() {
         binding.btnMenu.setOnClickListener {
-            binding.drawerLayout.openDrawer(GravityCompat.START)
+            binding.drawerLayout.closeDrawer(Gravity.LEFT, false)
+            binding.drawerLayout.openDrawer(Gravity.RIGHT)
         }
-        binding.btnNewChat.setOnClickListener { startFreshChat(showGreeting = false) }
+        binding.btnNewChat.setOnClickListener {
+            renderChatHistory()
+            binding.drawerLayout.closeDrawer(Gravity.RIGHT, false)
+            binding.drawerLayout.openDrawer(Gravity.LEFT)
+        }
+
+        binding.btnCreateNewChat.setOnClickListener {
+            createNewChat()
+        }
+        binding.btnOpenChatHistory.setOnClickListener {
+            renderChatHistory()
+            binding.drawerLayout.closeDrawer(Gravity.RIGHT, false)
+            binding.drawerLayout.openDrawer(Gravity.LEFT)
+        }
+        binding.btnDeleteAllChats.setOnClickListener {
+            confirmDeleteAllChats()
+        }
+        binding.btnOverlayPermission.setOnClickListener {
+            openOverlayPermission()
+        }
+        binding.btnVoiceSettings.setOnClickListener {
+            try {
+                startActivity(Intent("com.android.settings.TTS_SETTINGS"))
+            } catch (_: Exception) {
+                startActivity(Intent(Settings.ACTION_SETTINGS))
+            }
+        }
+        binding.btnAboutPrime.setOnClickListener {
+            showAboutPrime()
+        }
 
         binding.btnConnectBanner.setOnClickListener { connectChatGpt() }
         binding.btnSignIn.setOnClickListener { connectChatGpt() }
@@ -170,9 +205,11 @@ class MainActivity : AppCompatActivity() {
             if (isServerRunning) stopServer() else startServer()
         }
 
+        binding.tvAppVersion.text = "P6 • PRIME " + appVersionName()
         updateComposerButtons()
         updateIPAddress()
         updateServerUI()
+        renderChatHistory()
     }
 
     private fun warmUpPrime() {
@@ -215,11 +252,11 @@ class MainActivity : AppCompatActivity() {
                 showPlanWelcomeOnce()
 
                 val label = profile.email ?: profile.name ?: "ChatGPT account"
-                appendChat("PRIME", "اکانت ChatGPT وصل شد: $label")
+                appendChat("PRIME", "اکانت ChatGPT وصل شد: $label", persist = false)
                 speak("اتصال انجام شد. پرایم آماده است.")
             } catch (e: Exception) {
                 val message = authFriendlyError(e)
-                appendChat("PRIME", message)
+                appendChat("PRIME", message, persist = false)
             } finally {
                 setBusy(false)
             }
@@ -258,10 +295,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 appendChat(
                     "PRIME",
-                    "اتصال شبکه PRIME به OpenAI سالم است.\n$authResult\n$apiResult"
+                    "اتصال شبکه PRIME به OpenAI سالم است.\n$authResult\n$apiResult",
+                    persist = false
                 )
             } catch (e: Exception) {
-                appendChat("PRIME", authFriendlyError(e))
+                appendChat("PRIME", authFriendlyError(e), persist = false)
             } finally {
                 setBusy(false)
             }
@@ -283,7 +321,8 @@ class MainActivity : AppCompatActivity() {
             appendChat(
                 "PRIME",
                 if (remoteConfirmed) "اتصال ChatGPT قطع شد."
-                else "ورود محلی پاک شد. برای قطع کامل دسترسی می‌توانی از تنظیمات ChatGPT هم PRIME را Disconnect کنی."
+                else "ورود محلی پاک شد. برای قطع کامل دسترسی می‌توانی از تنظیمات ChatGPT هم PRIME را Disconnect کنی.",
+                persist = false
             )
             setBusy(false)
         }
@@ -332,21 +371,271 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun startFreshChat(showGreeting: Boolean) {
+    private fun openInitialChat() {
+        val prefs = getSharedPreferences(
+            PrimeChatStore.PREFS,
+            Context.MODE_PRIVATE
+        )
+        val saved = prefs.getLong(
+            PrimeChatStore.ACTIVE_CHAT_ID,
+            -1L
+        )
+
+        val chats = chatStore.listChats()
+        val target = when {
+            saved > 0 && chatStore.chatExists(saved) -> saved
+            chats.isNotEmpty() -> chats.first().id
+            else -> chatStore.createChat()
+        }
+
+        loadChat(target, showGreetingWhenEmpty = true)
+    }
+
+    private fun createNewChat() {
+        val chatId = chatStore.createChat()
+        loadChat(chatId, showGreetingWhenEmpty = false)
+        renderChatHistory()
+        binding.drawerLayout.closeDrawer(Gravity.LEFT)
+    }
+
+    private fun loadChat(
+        chatId: Long,
+        showGreetingWhenEmpty: Boolean = true
+    ) {
+        if (!chatStore.chatExists(chatId)) return
+
+        currentChatId = chatId
+        getSharedPreferences(
+            PrimeChatStore.PREFS,
+            Context.MODE_PRIVATE
+        ).edit()
+            .putLong(PrimeChatStore.ACTIVE_CHAT_ID, chatId)
+            .apply()
+
         pendingConfirmationTask = null
-        primeAgent.clearConversation()
         binding.chatMessages.removeAllViews()
         binding.etMessage.setText("")
         binding.tvAgentStatus.text = "Ready"
 
-        if (showGreeting) {
+        val messages = chatStore.messages(chatId)
+        primeAgent.restoreConversation(
+            messages.map { it.role to it.content }
+        )
+
+        renderedMessageCount = messages.size
+        messages.forEach { stored ->
+            appendChat(
+                if (stored.role == "user") "شما" else "PRIME",
+                stored.content,
+                persist = false
+            )
+        }
+
+        if (messages.isEmpty()) {
             appendChat(
                 "PRIME",
-                "PRIME P6 آماده است. می‌تونی مثل ChatGPT تایپ کنی، با میکروفن متن بگی، یا Voice Mode رو روشن کنی."
+                if (showGreetingWhenEmpty) {
+                    "PRIME P6 آماده است. می‌تونی مثل ChatGPT تایپ کنی، با میکروفن متن بگی، یا Voice Mode رو روشن کنی."
+                } else {
+                    "چت جدید آماده است."
+                },
+                persist = false
             )
-        } else {
-            appendChat("PRIME", "چت جدید آماده است.")
         }
+
+        renderChatHistory()
+    }
+
+    private fun syncChatIfChanged() {
+        if (currentChatId <= 0L || !chatStore.chatExists(currentChatId)) return
+
+        val messages = chatStore.messages(currentChatId)
+        if (messages.size != renderedMessageCount) {
+            loadChat(currentChatId, showGreetingWhenEmpty = true)
+        }
+    }
+
+    private fun renderChatHistory() {
+        if (!::chatStore.isInitialized) return
+
+        binding.chatHistoryList.removeAllViews()
+        val chats = chatStore.listChats()
+
+        if (chats.isEmpty()) {
+            val empty = TextView(this).apply {
+                text = "No saved chats yet"
+                setTextColor(
+                    ContextCompat.getColor(
+                        this@MainActivity,
+                        R.color.text_muted
+                    )
+                )
+                textSize = 13f
+                setPadding(dp(12), dp(18), dp(12), dp(18))
+            }
+            binding.chatHistoryList.addView(empty)
+            return
+        }
+
+        chats.forEach { chat ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(4), dp(2), dp(4), dp(2))
+            }
+
+            val openButton = MaterialButton(
+                this,
+                null,
+                com.google.android.material.R.attr.materialButtonOutlinedStyle
+            ).apply {
+                text = if (chat.id == currentChatId) {
+                    "• " + chat.title
+                } else {
+                    chat.title
+                }
+                isAllCaps = false
+                textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
+                setOnClickListener {
+                    loadChat(
+                        chat.id,
+                        showGreetingWhenEmpty = true
+                    )
+                    binding.drawerLayout.closeDrawer(Gravity.LEFT)
+                }
+                setOnLongClickListener {
+                    showRenameChat(chat)
+                    true
+                }
+            }
+
+            val deleteButton = MaterialButton(this).apply {
+                text = "×"
+                textSize = 22f
+                contentDescription = "Delete chat"
+                minWidth = dp(46)
+                layoutParams = LinearLayout.LayoutParams(
+                    dp(52),
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                setOnClickListener {
+                    confirmDeleteChat(chat)
+                }
+            }
+
+            row.addView(openButton)
+            row.addView(deleteButton)
+            binding.chatHistoryList.addView(row)
+        }
+    }
+
+    private fun confirmDeleteChat(chat: PrimeChatSummary) {
+        AlertDialog.Builder(this)
+            .setTitle("Delete chat?")
+            .setMessage(chat.title)
+            .setPositiveButton("Delete") { _, _ ->
+                val deletingCurrent = chat.id == currentChatId
+                chatStore.deleteChat(chat.id)
+
+                if (deletingCurrent) {
+                    val remaining = chatStore.listChats()
+                    if (remaining.isEmpty()) {
+                        val next = chatStore.createChat()
+                        loadChat(
+                            next,
+                            showGreetingWhenEmpty = true
+                        )
+                    } else {
+                        loadChat(
+                            remaining.first().id,
+                            showGreetingWhenEmpty = true
+                        )
+                    }
+                } else {
+                    renderChatHistory()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmDeleteAllChats() {
+        AlertDialog.Builder(this)
+            .setTitle("Delete all chats?")
+            .setMessage(
+                "همه چت‌های ذخیره‌شده روی این گوشی حذف می‌شوند. ورود ChatGPT و تنظیمات PRIME پاک نمی‌شوند."
+            )
+            .setPositiveButton("Delete all") { _, _ ->
+                chatStore.deleteAllChats()
+                val chatId = chatStore.createChat()
+                loadChat(
+                    chatId,
+                    showGreetingWhenEmpty = true
+                )
+                binding.drawerLayout.closeDrawer(Gravity.RIGHT)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showRenameChat(chat: PrimeChatSummary) {
+        val input = android.widget.EditText(this).apply {
+            setText(chat.title)
+            setSelection(text.length)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Rename chat")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                chatStore.renameChat(
+                    chat.id,
+                    input.text?.toString().orEmpty()
+                )
+                renderChatHistory()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun openOverlayPermission() {
+        startActivity(
+            Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
+        )
+    }
+
+    private fun appVersionName(): String {
+        return try {
+            packageManager
+                .getPackageInfo(packageName, 0)
+                .versionName
+                ?: "6.0.3"
+        } catch (_: Exception) {
+            "6.0.3"
+        }
+    }
+
+    private fun showAboutPrime() {
+        AlertDialog.Builder(this)
+            .setTitle("PRIME P6")
+            .setMessage(
+                "Version ${appVersionName()}\n\n" +
+                    "PRIME is a private Android action assistant. " +
+                    "P6 is the PRIME product identity.\n\n" +
+                    "Chats are saved locally on this phone. " +
+                    "Phone control requires Accessibility and persistent Voice requires Display over other apps."
+            )
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun sendCurrentMessage() {
@@ -441,7 +730,7 @@ class MainActivity : AppCompatActivity() {
                     binding.tvVoiceStatus.text = "Connection issue • retry when ready"
                     speak(message)
                 } else {
-                    appendChat("PRIME", message)
+                    appendChat("PRIME", message, persist = false)
                 }
             } finally {
                 setBusy(false)
@@ -694,8 +983,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun enterVoiceMode() {
         if (!authManager.isSignedIn()) {
-            appendChat("PRIME", "اول ChatGPT را از منوی کناری وصل کن.")
-            binding.drawerLayout.openDrawer(GravityCompat.START)
+            appendChat("PRIME", "اول ChatGPT را از منوی کناری وصل کن.", persist = false)
+            binding.drawerLayout.openDrawer(Gravity.RIGHT)
             return
         }
 
@@ -788,7 +1077,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            appendChat("PRIME", "تشخیص صدا روی این گوشی در دسترس نیست.")
+            appendChat("PRIME", "تشخیص صدا روی این گوشی در دسترس نیست.", persist = false)
             if (voiceModeActive) binding.tvVoiceStatus.text = "Speech recognition unavailable"
             return
         }
@@ -861,7 +1150,7 @@ class MainActivity : AppCompatActivity() {
                     } else if (error != SpeechRecognizer.ERROR_NO_MATCH &&
                         error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
                     ) {
-                        appendChat("PRIME", "صدای واضحی دریافت نشد. دوباره امتحان کن.")
+                        appendChat("PRIME", "صدای واضحی دریافت نشد. دوباره امتحان کن.", persist = false)
                     }
                 }
 
@@ -922,10 +1211,28 @@ class MainActivity : AppCompatActivity() {
         binding.btnVoice.visibility = if (hasText) View.GONE else View.VISIBLE
     }
 
-    private fun appendChat(who: String, message: String) {
+    private fun appendChat(
+        who: String,
+        message: String,
+        persist: Boolean = true
+    ) {
         if (message.isBlank()) return
 
         val isUser = who == "شما"
+
+        if (
+            persist &&
+            currentChatId > 0L &&
+            chatStore.chatExists(currentChatId)
+        ) {
+            chatStore.appendMessage(
+                currentChatId,
+                if (isUser) "user" else "assistant",
+                message
+            )
+            renderedMessageCount += 1
+            if (isUser) renderChatHistory()
+        }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = if (isUser) Gravity.END else Gravity.START
@@ -981,14 +1288,14 @@ class MainActivity : AppCompatActivity() {
                 when (which) {
                     0 -> {
                         if (authManager.isSignedIn()) {
-                            binding.drawerLayout.openDrawer(GravityCompat.START)
+                            binding.drawerLayout.openDrawer(Gravity.RIGHT)
                         } else {
                             connectChatGpt()
                         }
                     }
                     1 -> startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     2 -> startActivity(Intent(Settings.ACTION_SETTINGS))
-                    3 -> binding.drawerLayout.openDrawer(GravityCompat.START)
+                    3 -> binding.drawerLayout.openDrawer(Gravity.RIGHT)
                 }
             }
             .show()
