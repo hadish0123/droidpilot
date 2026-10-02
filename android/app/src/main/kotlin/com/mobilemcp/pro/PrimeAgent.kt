@@ -443,60 +443,106 @@ Never wrap JSON in markdown fences.
     ): List<ModelChoice> {
         if (!forceRefresh) {
             availableModels?.let { return it }
-        }
 
-        val token = auth.accessToken()
-        val models = withNetworkRetry("models") {
-            val conn = URL(MODELS_URL).openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 10_000
-            conn.readTimeout = 20_000
-            conn.setRequestProperty("Authorization", "Bearer $token")
-            conn.setRequestProperty("Accept", "application/json")
-            conn.setRequestProperty("User-Agent", USER_AGENT)
-
-            try {
-                val status = conn.responseCode
-                val stream =
-                    if (status in 200..299) conn.inputStream else conn.errorStream
-                val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-
-                if (status !in 200..299) throw apiError(status, body)
-
-                val array = JSONObject(body).optJSONArray("models")
-                    ?: throw IllegalStateException(
-                        "No ChatGPT models are available for this account"
-                    )
-
-                val visible = mutableListOf<ModelChoice>()
-                for (i in 0 until array.length()) {
-                    val item = array.optJSONObject(i) ?: continue
-                    if (item.optString("visibility") != "list") continue
-
-                    val slug = item.optString("slug")
-                    if (slug.isBlank()) continue
-
-                    visible += ModelChoice(
-                        slug = slug,
-                        displayName =
-                            item.optString("display_name").ifBlank { slug }
-                    )
-                }
-
-                if (visible.isEmpty()) {
-                    throw IllegalStateException(
-                        "No visible ChatGPT model is available"
-                    )
-                }
-
-                visible
-            } finally {
-                conn.disconnect()
+            sharedAvailableModels?.let { shared ->
+                availableModels = shared
+                return shared
             }
         }
 
-        availableModels = models
-        return models
+        return sharedModelMutex.withLock {
+            if (!forceRefresh) {
+                availableModels?.let { return@withLock it }
+
+                sharedAvailableModels?.let { shared ->
+                    availableModels = shared
+                    return@withLock shared
+                }
+            }
+
+            val token = auth.accessToken()
+            val models = withNetworkRetry("models") {
+                val conn =
+                    URL(MODELS_URL).openConnection() as HttpURLConnection
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 8_000
+                conn.readTimeout = 15_000
+                conn.setRequestProperty(
+                    "Authorization",
+                    "Bearer $token"
+                )
+                conn.setRequestProperty(
+                    "Accept",
+                    "application/json"
+                )
+                conn.setRequestProperty(
+                    "User-Agent",
+                    USER_AGENT
+                )
+
+                try {
+                    val status = conn.responseCode
+                    val stream =
+                        if (status in 200..299) {
+                            conn.inputStream
+                        } else {
+                            conn.errorStream
+                        }
+
+                    val body = stream
+                        ?.bufferedReader()
+                        ?.use { it.readText() }
+                        .orEmpty()
+
+                    if (status !in 200..299) {
+                        throw apiError(status, body)
+                    }
+
+                    val array = JSONObject(body)
+                        .optJSONArray("models")
+                        ?: throw IllegalStateException(
+                            "No ChatGPT models are available for this account"
+                        )
+
+                    val visible = mutableListOf<ModelChoice>()
+                    for (i in 0 until array.length()) {
+                        val item =
+                            array.optJSONObject(i)
+                                ?: continue
+
+                        if (
+                            item.optString("visibility") != "list"
+                        ) {
+                            continue
+                        }
+
+                        val slug = item.optString("slug")
+                        if (slug.isBlank()) continue
+
+                        visible += ModelChoice(
+                            slug = slug,
+                            displayName =
+                                item.optString("display_name")
+                                    .ifBlank { slug }
+                        )
+                    }
+
+                    if (visible.isEmpty()) {
+                        throw IllegalStateException(
+                            "No visible ChatGPT model is available"
+                        )
+                    }
+
+                    visible
+                } finally {
+                    conn.disconnect()
+                }
+            }
+
+            availableModels = models
+            sharedAvailableModels = models
+            models
+        }
     }
 
     private suspend fun requestTextResponse(
