@@ -15,5 +15,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "MobileMcpPro"
+rootProject.name = "PRIME"
 include(":app")
