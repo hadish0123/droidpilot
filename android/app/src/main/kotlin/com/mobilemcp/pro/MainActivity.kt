@@ -84,6 +84,7 @@ class MainActivity : AppCompatActivity() {
         updateAccessibilityStatus()
         updateAuthUI()
         startFreshChat(showGreeting = true)
+        warmUpPrime()
 
         if (intent?.data?.scheme == "primep6") {
             binding.tvAgentStatus.text = "Finishing ChatGPT connection…"
@@ -124,10 +125,20 @@ class MainActivity : AppCompatActivity() {
         binding.btnMic.setOnClickListener { startVoiceInput(autoSend = false) }
         binding.btnVoice.setOnClickListener { enterVoiceMode() }
         binding.btnExitVoice.setOnClickListener { exitVoiceMode() }
+        binding.btnVoiceMic.setOnClickListener {
+            textToSpeech?.stop()
+            speechRecognizer?.cancel()
+            startVoiceInput(autoSend = true)
+        }
+        binding.btnVoiceSend.setOnClickListener { sendVoiceMessage() }
         binding.btnPlus.setOnClickListener { showQuickActions() }
 
         binding.etMessage.setOnEditorActionListener { _, _, _ ->
             sendCurrentMessage()
+            true
+        }
+        binding.etVoiceMessage.setOnEditorActionListener { _, _, _ ->
+            sendVoiceMessage()
             true
         }
         binding.etMessage.addTextChangedListener(object : TextWatcher {
@@ -149,6 +160,19 @@ class MainActivity : AppCompatActivity() {
         updateComposerButtons()
         updateIPAddress()
         updateServerUI()
+    }
+
+    private fun warmUpPrime() {
+        if (!authManager.isSignedIn()) return
+
+        appScope.launch(Dispatchers.IO) {
+            try {
+                primeAgent.warmUp()
+            } catch (_: Exception) {
+                // Warm-up is best effort. Real requests still have retry and
+                // user-facing diagnostics.
+            }
+        }
     }
 
     private fun connectChatGpt() {
@@ -174,6 +198,7 @@ class MainActivity : AppCompatActivity() {
 
                 primeAgent.resetSession()
                 updateAuthUI()
+                warmUpPrime()
                 showPlanWelcomeOnce()
 
                 val label = profile.email ?: profile.name ?: "ChatGPT account"
@@ -208,10 +233,20 @@ class MainActivity : AppCompatActivity() {
         setBusy(true, "Testing OpenAI connection…")
         appScope.launch {
             try {
-                val result = withContext(Dispatchers.IO) {
+                val authResult = withContext(Dispatchers.IO) {
                     authManager.testOpenAiConnection()
                 }
-                appendChat("PRIME", "اتصال شبکه PRIME به OpenAI سالم است.\n$result")
+                val apiResult = if (authManager.isSignedIn()) {
+                    withContext(Dispatchers.IO) {
+                        primeAgent.testApiConnection()
+                    }
+                } else {
+                    "API test requires a connected ChatGPT account"
+                }
+                appendChat(
+                    "PRIME",
+                    "اتصال شبکه PRIME به OpenAI سالم است.\n$authResult\n$apiResult"
+                )
             } catch (e: Exception) {
                 appendChat("PRIME", authFriendlyError(e))
             } finally {
@@ -286,7 +321,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startFreshChat(showGreeting: Boolean) {
         pendingConfirmationTask = null
-        primeAgent.resetSession()
+        primeAgent.clearConversation()
         binding.chatMessages.removeAllViews()
         binding.etMessage.setText("")
         binding.tvAgentStatus.text = "Ready"
@@ -305,11 +340,28 @@ class MainActivity : AppCompatActivity() {
         val text = binding.etMessage.text?.toString()?.trim().orEmpty()
         if (text.isBlank() || isBusy) return
         binding.etMessage.setText("")
-        handleInput(text)
+        handleInput(text, fromVoiceMode = false)
     }
 
-    private fun handleInput(input: String) {
-        appendChat("شما", input)
+    private fun sendVoiceMessage() {
+        val text = binding.etVoiceMessage.text?.toString()?.trim().orEmpty()
+        if (text.isBlank() || isBusy) return
+
+        textToSpeech?.stop()
+        speechRecognizer?.cancel()
+        binding.etVoiceMessage.setText("")
+        handleInput(text, fromVoiceMode = true)
+    }
+
+    private fun handleInput(
+        input: String,
+        fromVoiceMode: Boolean = voiceModeActive
+    ) {
+        if (fromVoiceMode) {
+            binding.tvVoiceStatus.text = "You: " + input.take(120)
+        } else {
+            appendChat("شما", input)
+        }
 
         var task = input
         var confirmed = false
@@ -324,8 +376,12 @@ class MainActivity : AppCompatActivity() {
                 }
                 isNegativeConfirmation(input) -> {
                     pendingConfirmationTask = null
-                    appendChat("PRIME", "لغو شد.")
-                    speak("لغو شد.")
+                    if (fromVoiceMode) {
+                        binding.tvVoiceStatus.text = "Cancelled"
+                        speak("لغو شد.")
+                    } else {
+                        appendChat("PRIME", "لغو شد.")
+                    }
                     return
                 }
                 else -> pendingConfirmationTask = null
@@ -333,7 +389,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         setBusy(true, "P6 is working…")
-        if (voiceModeActive) binding.tvVoiceStatus.text = "Thinking…"
+        if (fromVoiceMode) binding.tvVoiceStatus.text = "Thinking…"
 
         appScope.launch {
             try {
@@ -348,7 +404,7 @@ class MainActivity : AppCompatActivity() {
                         onProgress = { message ->
                             runOnUiThread {
                                 binding.tvAgentStatus.text = "P6 • $message"
-                                if (voiceModeActive) {
+                                if (fromVoiceMode) {
                                     binding.tvVoiceStatus.text = message
                                 }
                             }
@@ -360,14 +416,20 @@ class MainActivity : AppCompatActivity() {
                     pendingConfirmationTask = task
                 }
 
-                appendChat("PRIME", outcome.text)
-                if (voiceModeActive) binding.tvVoiceStatus.text = outcome.text.take(140)
-                speak(outcome.text)
+                if (fromVoiceMode) {
+                    binding.tvVoiceStatus.text = "PRIME is speaking…"
+                    speak(outcome.text)
+                } else {
+                    appendChat("PRIME", outcome.text)
+                }
             } catch (e: Exception) {
                 val message = userFriendlyError(e)
-                appendChat("PRIME", message)
-                if (voiceModeActive) binding.tvVoiceStatus.text = message.take(140)
-                speak(message)
+                if (fromVoiceMode) {
+                    binding.tvVoiceStatus.text = "Connection issue • retry when ready"
+                    speak(message)
+                } else {
+                    appendChat("PRIME", message)
+                }
             } finally {
                 setBusy(false)
             }
@@ -377,8 +439,13 @@ class MainActivity : AppCompatActivity() {
     private fun userFriendlyError(e: Exception): String {
         val message = e.message.orEmpty()
         return when {
-            message.contains("PRIME_NETWORK_DNS") ->
-                "خود PRIME به شبکه OpenAI دسترسی ندارد. اگر VPN روشن است PRIME را هم داخل VPN فعال کن."
+            message.contains("PRIME_API_DNS") ||
+                message.contains("PRIME_NETWORK_DNS") ||
+                message.contains("Unable to resolve host", ignoreCase = true) ->
+                "اتصال PRIME به OpenAI از سمت DNS/VPN قطع شده. اگر VPN یا Split Tunnel داری، PRIME را هم داخل VPN فعال کن و دوباره امتحان کن."
+            message.contains("PRIME_API_NETWORK") ||
+                message.contains("unexpected end of stream", ignoreCase = true) ->
+                "ارتباط PRIME با OpenAI لحظه‌ای قطع شد. برنامه چند بار خودکار تلاش کرد؛ دوباره امتحان کن."
             message.contains("usage limit", ignoreCase = true) ||
                 message.contains("subscription_sharing_usage_limit", ignoreCase = true) ->
                 "سهمیه فعلی ChatGPT به حدش رسیده. از Manage usage وضعیت مصرف را بررسی کن."
@@ -619,6 +686,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         voiceModeActive = true
+        binding.etVoiceMessage.setText("")
         binding.voiceOverlay.visibility = View.VISIBLE
         binding.tvVoiceStatus.text = "Listening…"
         startVoiceInput(autoSend = true)
@@ -746,8 +814,8 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     if (voiceAutoSend) {
-                        if (voiceModeActive) binding.tvVoiceStatus.text = spoken
-                        handleInput(spoken)
+                        if (voiceModeActive) binding.tvVoiceStatus.text = "You: " + spoken.take(120)
+                        handleInput(spoken, fromVoiceMode = true)
                     } else {
                         binding.etMessage.setText(spoken)
                         binding.etMessage.setSelection(spoken.length)
@@ -856,6 +924,9 @@ class MainActivity : AppCompatActivity() {
         binding.btnSend.isEnabled = !busy
         binding.btnMic.isEnabled = !busy
         binding.btnVoice.isEnabled = !busy
+        binding.btnVoiceMic.isEnabled = !busy
+        binding.btnVoiceSend.isEnabled = !busy
+        binding.etVoiceMessage.isEnabled = !busy
         binding.btnSignIn.isEnabled = !busy
         binding.btnSignOut.isEnabled = !busy
         binding.tvAgentStatus.text = status ?: if (busy) "P6 is working…" else "Ready"
