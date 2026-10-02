@@ -260,18 +260,38 @@ class MobileAccessibilityService : AccessibilityService() {
     }
 
     private fun executeSetText(params: JsonObject?): CommandResponse {
-        val text = params?.get("text")?.asString ?: return CommandResponse.error(null, "Missing text")
-        val focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-            ?: return CommandResponse.error(null, "No focused input field")
+        val text = params?.get("text")?.asString
+            ?: return CommandResponse.error(null, "Missing text")
+
+        val root = targetRootInActiveWindow()
+            ?: return CommandResponse.error(null, "No target app window")
+
+        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        if (focused == null) {
+            root.recycle()
+            return CommandResponse.error(null, "No focused input field")
+        }
 
         val args = android.os.Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                text
+            )
         }
-        val result = focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+
+        val result = focused.performAction(
+            AccessibilityNodeInfo.ACTION_SET_TEXT,
+            args
+        )
+
         focused.recycle()
+        root.recycle()
 
         return if (result) {
-            CommandResponse.success(null, JsonObject().apply { addProperty("text_set", text) })
+            CommandResponse.success(
+                null,
+                JsonObject().apply { addProperty("text_set", text) }
+            )
         } else {
             CommandResponse.error(null, "Failed to set text")
         }
