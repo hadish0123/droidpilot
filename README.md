@@ -18,6 +18,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 - Press Back, Home, Recents, Notifications and Quick Settings
 - Confirm consequential final actions such as sending, publishing, deleting, purchasing or changing security/account settings
 - Optional local/LAN MCP Device Bridge for external MCP-compatible agents
+- Optional private remote MCP bridge so a user-authorized ChatGPT plugin can reach PRIME without exposing the phone to the public internet
 - No root required
 
 ## Privacy model
@@ -56,7 +57,7 @@ Official documentation:
 
 ## Voice
 
-PRIME 6.0.9 speaks Persian independently of Google/Samsung Text-to-Speech. On first opening Voice or testing speech in settings, it downloads the **fa_IR ganji medium** Piper voice pack (64 MiB), verifies its pinned SHA-256 and safely installs the model, tokens and eSpeak language data in app-private storage. Downloads show progress, can be cancelled and can be retried. Allow 260 MB free space during installation.
+PRIME 6.0.10 speaks Persian independently of Google/Samsung Text-to-Speech. On first opening Voice or testing speech in settings, it downloads the **fa_IR ganji medium** Piper voice pack (64 MiB), verifies its pinned SHA-256 and safely installs the model, tokens and eSpeak language data in app-private storage. Downloads show progress, can be cancelled and can be retried. Allow 260 MB free space during installation.
 
 After installation, synthesis and playback run on the phone without a speech API key or a TTS network request. ChatGPT responses still require internet and an eligible connected account. Android `SpeechRecognizer` provides speech input and may require internet. Its language defaults to **fa-IR**, independently of the phone language; settings can switch input to English and adjust speech speed.
 
@@ -151,6 +152,28 @@ The MCP server is named `prime-p6`. The Android app's bridge listens on port `87
 The bridge now requires authentication for every connection. In PRIME, open the advanced Device Bridge section and copy the generated **Device Bridge token**. Pass that value as the `authToken` argument to the MCP `connect` tool. The token is generated with 256 bits of entropy, stored encrypted through Android Keystore, and is never written to application logs or source control.
 
 The built-in PRIME chat/voice path does **not** require the MCP bridge.
+
+### Private remote ChatGPT bridge
+
+PRIME 6.0.10 also keeps the original LAN bridge intact while adding an optional
+outbound-only remote mode for ChatGPT plugins. The phone registers over HTTPS
+using its existing Keystore-backed Device Bridge proof, receives a device-bound
+signed MCP URL, stores the returned credential in Android Keystore, and then
+maintains a foreground `wss://` connection to the relay.
+
+No inbound phone port, public phone IP, or router port-forward is required.
+
+1. Open PRIME → **پل اتصال دستگاه · پیشرفته**.
+2. Tap **وصل کردن PRIME به ChatGPT**.
+3. Copy **آدرس خصوصی افزونه ChatGPT**.
+4. In ChatGPT Developer mode, create a custom MCP server and paste that private
+   HTTPS MCP URL.
+5. Keep PRIME Accessibility enabled. The remote connection runs in its own
+   foreground service while the user works in ChatGPT or another app.
+
+Each private MCP URL is cryptographically bound to that PRIME installation.
+The existing local `stdio` MCP server and LAN Device Bridge remain available
+and unchanged.
 
 ## Architecture
 
