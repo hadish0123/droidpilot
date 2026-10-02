@@ -14,8 +14,8 @@ export const toolDefinitions = {
         .describe("WebSocket port (default: 8765)"),
       authToken: z
         .string()
-        .optional()
-        .describe("Optional authentication token"),
+        .min(32)
+        .describe("Required authentication token shown in PRIME Device Bridge settings"),
     },
   },
 
