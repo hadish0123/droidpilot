@@ -1,5 +1,4 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
 import { RemotePhoneHub } from "./remote-phone-hub.js";
 import { toolDefinitions } from "./tools.js";
 
@@ -13,7 +12,7 @@ type ToolResult = {
 
 export function createRemoteServer(
   hub: RemotePhoneHub,
-  createPairingCode: () => { code: string; expiresInSeconds: number; relayUrl?: string }
+  identity: string
 ): McpServer {
   const server = new McpServer({ name: "prime-p6-remote", version: "6.0.0" });
 
@@ -23,7 +22,7 @@ export function createRemoteServer(
     timeoutMs?: number
   ): Promise<ToolResult> {
     try {
-      const response = await hub.sendCommand(command, params, timeoutMs);
+      const response = await hub.sendCommand(identity, command, params, timeoutMs);
       if (!response.success) {
         return { content: [{ type: "text", text: `Error: ${response.error || "Phone action failed"}` }], isError: true };
       }
@@ -55,32 +54,16 @@ export function createRemoteServer(
 
   server.tool(
     "get_phone_status",
-    "Check whether the user's PRIME Android phone is connected to the private remote bridge.",
+    "Check whether this private PRIME Android device is connected to the remote bridge.",
     {},
     async () => ({
       content: [{
         type: "text",
         text: JSON.stringify({
-          connected: hub.connected,
-          deviceId: hub.connectedDeviceId,
+          connected: hub.isConnected(identity),
         }),
       }],
     })
-  );
-
-  server.tool(
-    "create_pairing_code",
-    "Create a one-time code for pairing the user's PRIME Android app with this private bridge. The code expires quickly.",
-    {},
-    async () => {
-      const value = createPairingCode();
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(value),
-        }],
-      };
-    }
   );
 
   server.tool("get_device_info", toolDefinitions.get_device_info.description, {}, async () => sendAndFormat("get_device_info"));
