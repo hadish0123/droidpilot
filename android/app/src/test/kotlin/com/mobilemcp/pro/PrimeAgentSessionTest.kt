@@ -293,7 +293,7 @@ class PrimeAgentSessionTest {
             var actions = 0
             val first = turn(
                 agent,
-                "پیام را ارسال کن",
+                "در تلگرام پیام را ارسال کن",
                 { _, _ ->
                     actions += 1
                     PrimeActionResult(true, "sent")
@@ -309,7 +309,7 @@ class PrimeAgentSessionTest {
 
             val confirmed = turn(
                 agent,
-                "پیام را ارسال کن",
+                "در تلگرام پیام را ارسال کن",
                 { command, params ->
                     actions += 1
                     assertEquals("click_element", command)
