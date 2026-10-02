@@ -170,6 +170,11 @@ class OpenAIAuthManager(private val context: Context) {
         openBrowser: (Uri) -> Unit,
         onCallbackReceived: (() -> Unit)? = null
     ): ChatGptProfile = withContext(Dispatchers.IO) {
+        // Verify that PRIME itself can reach OpenAI before sending the user
+        // into the browser. This avoids a successful browser approval followed
+        // by a confusing in-app DNS failure on split-tunnel VPN setups.
+        getJsonWithRetry(DISCOVERY_ENDPOINT, attempts = 2)
+
         val previous = loadRecord()
         val savedClientId = previous?.clientId?.takeIf { it.startsWith("oaiapp_") }
             ?: pendingClientId()
