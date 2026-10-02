@@ -1,10 +1,10 @@
 {
-  "name": "droidpilot",
-  "version": "1.0.0",
-  "description": "MCP server for Android device automation via Accessibility Service",
+  "name": "prime-p6-mcp",
+  "version": "6.0.0",
+  "description": "PRIME P6 MCP bridge for user-authorized Android device automation",
   "main": "dist/index.js",
   "bin": {
-    "droidpilot": "./dist/index.js"
+    "prime-p6": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -12,6 +12,8 @@
     "dev": "tsx src/index.ts"
   },
   "keywords": [
+    "prime",
+    "p6",
     "mcp",
     "android",
     "automation",
