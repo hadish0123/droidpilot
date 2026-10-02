@@ -4,6 +4,8 @@ import com.mobilemcp.pro.ai.AiMessage
 import com.mobilemcp.pro.ai.AiModel
 import com.mobilemcp.pro.ai.AiProvider
 import com.mobilemcp.pro.ai.AiTextRequest
+import com.mobilemcp.pro.ai.ModelPurpose
+import com.mobilemcp.pro.ai.ModelRegistry
 import com.mobilemcp.pro.ai.OpenAiResponsesProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -52,7 +54,6 @@ class PrimeAgent internal constructor(
     companion object {
         private const val MAX_AGENT_STEPS = 16
         private const val MAX_UI_CHARS = 10_000
-        private const val USER_AGENT = "PRIME-P6/6.0.9"
 
         @Volatile
         private var sharedAvailableModels: List<AiModel>? = null
@@ -61,6 +62,7 @@ class PrimeAgent internal constructor(
     }
 
     private val chatHistory = mutableListOf<ChatLine>()
+    private val modelRegistry = ModelRegistry()
     private var phoneContext = false
     private var availableModels: List<AiModel>? = null
     private var fastModel: AiModel? = null
@@ -377,33 +379,13 @@ Never wrap JSON in markdown fences.
         else actionModel?.let { return it }
 
         val visible = loadAvailableModels()
-
-        val chosen = if (preferFast) {
-            chooseByMarkers(visible, listOf("luna", "mini", "instant"))
-                ?: chooseByMarkers(visible, listOf("sol"))
-                ?: visible.first()
-        } else {
-            chooseByMarkers(visible, listOf("sol"))
-                ?: chooseByMarkers(visible, listOf("pro"))
-                ?: visible.first()
-        }
+        val chosen = modelRegistry.select(
+            visible,
+            if (preferFast) ModelPurpose.FAST_CHAT else ModelPurpose.AGENT_ACTION
+        )
 
         if (preferFast) fastModel = chosen else actionModel = chosen
         return chosen
-    }
-
-    private fun chooseByMarkers(
-        models: List<AiModel>,
-        markers: List<String>
-    ): AiModel? {
-        for (marker in markers) {
-            val match = models.firstOrNull {
-                it.id.contains(marker, ignoreCase = true) ||
-                    it.displayName.contains(marker, ignoreCase = true)
-            }
-            if (match != null) return match
-        }
-        return null
     }
 
     private suspend fun loadAvailableModels(
@@ -482,28 +464,5 @@ Never wrap JSON in markdown fences.
         }
     }
 
-    private fun apiError(status: Int, body: String): Exception {
-        val message = try {
-            val json = JSONObject(body)
-            json.optString("detail").ifBlank {
-                json.optJSONObject("error")?.optString("message").orEmpty()
-            }
-        } catch (_: Exception) {
-            ""
-        }
 
-        val friendly = when {
-            message.isNotBlank() -> message
-            status == 401 ->
-                "ChatGPT connection expired. Connect the account again."
-            status == 403 ->
-                "ChatGPT plan access is not available for this request."
-            status == 429 ->
-                "ChatGPT usage limit reached. Try again later."
-            else ->
-                "ChatGPT request failed with HTTP $status"
-        }
-
-        return IllegalStateException(friendly)
-    }
 }
