@@ -105,7 +105,8 @@ class WebSocketCommandServer(
 
     override fun onStart() {
         Log.i(TAG, "WebSocket server started on port ${this.port}")
-        onLog("Server started securely on 127.0.0.1:${this.port}")\n        onLog("Bridge token (this session only): $authToken")
+        onLog("Server started securely on 127.0.0.1:${this.port}")
+        onLog("Bridge token (this session only): $authToken")
         connectionLostTimeout = 60
     }
 
