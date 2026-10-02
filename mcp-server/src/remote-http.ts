@@ -108,14 +108,25 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (!url.pathname.startsWith("/mcp/")) {
+    let mcpAuthorized = false;
+    if (url.pathname === "/mcp") {
+      const auth = bearer(req);
+      if (mcpBearer.length >= 32) {
+        const supplied = Buffer.from(auth, "utf8");
+        const expected = Buffer.from(mcpBearer, "utf8");
+        mcpAuthorized =
+          supplied.length === expected.length &&
+          timingSafeEqual(supplied, expected);
+      }
+    } else if (url.pathname.startsWith("/mcp/")) {
+      const mcpToken = decodeURIComponent(url.pathname.slice("/mcp/".length));
+      mcpAuthorized = verifyToken(mcpToken, "mcp") !== null;
+    } else {
       json(res, 404, { error: "Not found" });
       return;
     }
 
-    const mcpToken = decodeURIComponent(url.pathname.slice("/mcp/".length));
-    const mcpDeviceId = verifyToken(mcpToken, "mcp");
-    if (!mcpDeviceId) {
+    if (!mcpAuthorized) {
       json(res, 401, { error: "Unauthorized" });
       return;
     }
