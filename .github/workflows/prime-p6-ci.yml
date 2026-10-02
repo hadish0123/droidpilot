@@ -5,6 +5,7 @@ on:
     branches:
       - master
       - rebuild/prime-p6
+      - fix/prime-chat-ui-auth
   pull_request:
     branches:
       - master
