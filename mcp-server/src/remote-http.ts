@@ -1,19 +1,27 @@
-import { createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomInt, timingSafeEqual } from "node:crypto";
 import http, { IncomingMessage, ServerResponse } from "node:http";
 import { WebSocketServer } from "ws";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { RemotePhoneHub } from "./remote-phone-hub.js";
 import { createRemoteServer } from "./remote-server.js";
 
-const port = Number(process.env.PORT || 3000);\nconst mcpBearer = (process.env.PRIME_MCP_BEARER || "").trim();
+const port = Number(process.env.PORT || 3000);
+const mcpBearer = (process.env.PRIME_MCP_BEARER || "").trim();
 const pairingSecret = (process.env.PRIME_PAIRING_SECRET || "").trim();
 const configuredPairingCode = (process.env.PRIME_PAIRING_CODE || "").trim();
 const publicBaseUrl = (process.env.PRIME_PUBLIC_BASE_URL || "").replace(/\/$/, "");
 
-if (pairingSecret.length < 32) throw new Error("PRIME_PAIRING_SECRET must be at least 32 characters");
+if (pairingSecret.length < 32) {
+  throw new Error("PRIME_PAIRING_SECRET must be at least 32 characters");
+}
 
 const hub = new RemotePhoneHub();
 const pairCodes = new Map<string, number>();
+const initialPairingCode = /^\d{6}$/.test(configuredPairingCode)
+  ? configuredPairingCode
+  : String(randomInt(100000, 1000000));
+pairCodes.set(initialPairingCode, Date.now() + 30 * 60_000);
+
 const wsServer = new WebSocketServer({ noServer: true });
 
 function json(res: ServerResponse, status: number, body: unknown) {
@@ -50,9 +58,6 @@ function createPairingCode() {
 }
 
 function consumePairingCode(code: string): boolean {
-  if (/^\d{6}$/.test(configuredPairingCode) && code === configuredPairingCode) {
-    return true;
-  }
   const expires = pairCodes.get(code);
   pairCodes.delete(code);
   return Boolean(expires && expires > Date.now());
@@ -60,21 +65,30 @@ function consumePairingCode(code: string): boolean {
 
 function signToken(deviceId: string, purpose: "device" | "mcp"): string {
   const signature = createHmac("sha256", pairingSecret)
-    .update(`${purpose}:${deviceId}`)
+    .update(`{purpose}:`{deviceId})
     .digest("hex");
-  return `${deviceId}.${signature}`;
+  return `{deviceId}.`{signature};
 }
 
 function verifyToken(token: string, purpose: "device" | "mcp"): string | null {
   const dot = token.lastIndexOf(".");
   if (dot < 1) return null;
+
   const deviceId = token.slice(0, dot);
+  if (!/^[a-zA-Z0-9_-]{8,128}$/.test(deviceId)) return null;
+
   const supplied = Buffer.from(token.slice(dot + 1), "utf8");
   const expected = Buffer.from(
-    createHmac("sha256", pairingSecret).update(`${purpose}:${deviceId}`).digest("hex"),
+    createHmac("sha256", pairingSecret)
+      .update(`{purpose}:`{deviceId})
+      .digest("hex"),
     "utf8"
   );
-  return supplied.length === expected.length && timingSafeEqual(supplied, expected) ? deviceId : null;
+
+  return supplied.length === expected.length &&
+    timingSafeEqual(supplied, expected)
+    ? deviceId
+    : null;
 }
 
 function bearer(req: IncomingMessage): string {
@@ -82,12 +96,23 @@ function bearer(req: IncomingMessage): string {
   return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
 }
 
+function legacyBearerAuthorized(req: IncomingMessage): boolean {
+  if (mcpBearer.length < 32) return false;
+  const supplied = Buffer.from(bearer(req), "utf8");
+  const expected = Buffer.from(mcpBearer, "utf8");
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", "http://localhost");
 
     if (url.pathname === "/health") {
-      json(res, 200, { ok: true, service: "prime-p6-remote-mcp", phoneConnected: hub.connected });
+      json(res, 200, {
+        ok: true,
+        service: "prime-p6-remote-mcp",
+        phoneConnected: hub.connected,
+      });
       return;
     }
 
@@ -95,32 +120,29 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const code = String(body?.code || "").trim();
       const deviceId = String(body?.deviceId || "").trim();
+
       if (!/^[a-zA-Z0-9_-]{8,128}$/.test(deviceId) || !consumePairingCode(code)) {
         json(res, 401, { error: "Invalid or expired pairing code" });
         return;
       }
+
       const credential = signToken(deviceId, "device");
       const mcpToken = signToken(deviceId, "mcp");
       json(res, 200, {
         credential,
-        mcpUrl: publicBaseUrl ? `${publicBaseUrl}/mcp/${mcpToken}` : undefined,
+        mcpUrl: publicBaseUrl
+          ? `{publicBaseUrl}/mcp/`{mcpToken}
+          : undefined,
       });
       return;
     }
 
     let mcpAuthorized = false;
     if (url.pathname === "/mcp") {
-      const auth = bearer(req);
-      if (mcpBearer.length >= 32) {
-        const supplied = Buffer.from(auth, "utf8");
-        const expected = Buffer.from(mcpBearer, "utf8");
-        mcpAuthorized =
-          supplied.length === expected.length &&
-          timingSafeEqual(supplied, expected);
-      }
+      mcpAuthorized = legacyBearerAuthorized(req);
     } else if (url.pathname.startsWith("/mcp/")) {
-      const mcpToken = decodeURIComponent(url.pathname.slice("/mcp/".length));
-      mcpAuthorized = verifyToken(mcpToken, "mcp") !== null;
+      const token = decodeURIComponent(url.pathname.slice("/mcp/".length));
+      mcpAuthorized = verifyToken(token, "mcp") !== null;
     } else {
       json(res, 404, { error: "Not found" });
       return;
@@ -136,6 +158,7 @@ const server = http.createServer(async (req, res) => {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });
+
     await mcp.connect(transport);
     try {
       await transport.handleRequest(req, res, body);
@@ -143,8 +166,11 @@ const server = http.createServer(async (req, res) => {
       await mcp.close();
     }
   } catch (error) {
-    if (!res.headersSent) json(res, 500, { error: (error as Error).message });
-    else res.end();
+    if (!res.headersSent) {
+      json(res, 500, { error: (error as Error).message });
+    } else {
+      res.end();
+    }
   }
 });
 
@@ -155,17 +181,22 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
+
   const deviceId = verifyToken(bearer(req), "device");
   if (!deviceId) {
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
     return;
   }
+
   wsServer.handleUpgrade(req, socket, head, (ws) => {
     hub.attach(ws, deviceId);
   });
 });
 
 server.listen(port, "0.0.0.0", () => {
-  console.error(`PRIME P6 remote MCP listening on :${port}`);
+  console.error(`PRIME P6 remote MCP listening on :`{port});
+  console.error(
+    `PRIME pairing code: `{initialPairingCode} (one-time, expires in 30 minutes)
+  );
 });
