@@ -39,6 +39,7 @@ import com.mobilemcp.pro.service.ConnectionForegroundService
 import com.mobilemcp.pro.service.MobileAccessibilityService
 import com.mobilemcp.pro.service.VoiceSessionForegroundService
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -74,6 +75,7 @@ class MainActivity : AppCompatActivity() {
     private var speechRecognizer: SpeechRecognizer? = null
     private var pendingConfirmationTask: String? = null
     private var isBusy = false
+    private var activeGenerationJob: Job? = null
 
     private var voiceModeActive = false
     private var voiceAutoSend = false
@@ -183,6 +185,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnTestOpenAi.setOnClickListener { testOpenAiConnection() }
 
         binding.btnSend.setOnClickListener { sendCurrentMessage() }
+        binding.btnStop.setOnClickListener { stopGeneration() }
         binding.btnMic.setOnClickListener { startVoiceInput(autoSend = false) }
         binding.btnVoice.setOnClickListener { enterVoiceMode() }
         binding.btnExitVoice.setOnClickListener { exitVoiceMode() }
@@ -731,9 +734,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         setBusy(true, "پرایم در حال انجام درخواست است…")
-        if (fromVoiceMode) binding.tvVoiceStatus.text = "در حال آماده‌کردن پاسخ…"
+        if (fromVoiceMode) {
+            binding.tvVoiceStatus.text = "در حال آماده‌کردن پاسخ…"
+        }
 
-        appScope.launch {
+        val streamBuffer = StringBuffer()
+        var streamView: TextView? = null
+
+        val job = appScope.launch(start = CoroutineStart.LAZY) {
             try {
                 val outcome = withContext(Dispatchers.IO) {
                     primeAgent.run(
@@ -750,6 +758,28 @@ class MainActivity : AppCompatActivity() {
                                     binding.tvVoiceStatus.text = message
                                 }
                             }
+                        },
+                        onTextDelta = if (fromVoiceMode) {
+                            null
+                        } else {
+                            { delta ->
+                                streamBuffer.append(delta)
+                                val snapshot = streamBuffer.toString()
+                                runOnUiThread {
+                                    if (streamView == null) {
+                                        streamView = addChatBubble(
+                                            isUser = false,
+                                            message = snapshot
+                                        )
+                                    } else {
+                                        updateChatBubble(
+                                            streamView!!,
+                                            isUser = false,
+                                            message = snapshot
+                                        )
+                                    }
+                                }
+                            }
                         }
                     )
                 }
@@ -763,22 +793,82 @@ class MainActivity : AppCompatActivity() {
                     binding.tvVoiceStatus.text = "پرایم در حال صحبت است…"
                     speak(outcome.text)
                 } else {
-                    appendChat("PRIME", outcome.text)
+                    val streamed = streamBuffer.isNotEmpty()
+                    if (streamed) {
+                        val target = streamView ?: addChatBubble(
+                            isUser = false,
+                            message = outcome.text
+                        ).also { streamView = it }
+                        updateChatBubble(
+                            target,
+                            isUser = false,
+                            message = outcome.text
+                        )
+                        persistChatMessage(
+                            isUser = false,
+                            message = outcome.text
+                        )
+                    } else {
+                        appendChat("PRIME", outcome.text)
+                    }
                 }
-            } catch (e: CancellationException) {
-                throw e
+            } catch (_: CancellationException) {
+                if (!isFinishing && !isDestroyed) {
+                    if (fromVoiceMode) {
+                        binding.tvVoiceStatus.text = getString(R.string.ui_generation_stopped)
+                    } else {
+                        val partial = streamBuffer.toString().trim()
+                        if (partial.isNotBlank()) {
+                            val target = streamView ?: addChatBubble(
+                                isUser = false,
+                                message = partial
+                            ).also { streamView = it }
+                            updateChatBubble(
+                                target,
+                                isUser = false,
+                                message = partial + "\n\n" +
+                                    getString(R.string.ui_generation_stopped)
+                            )
+                        }
+                        binding.tvAgentStatus.text =
+                            getString(R.string.ui_generation_stopped)
+                    }
+                }
             } catch (e: Exception) {
                 val message = userFriendlyError(e)
                 if (fromVoiceMode) {
                     binding.tvVoiceStatus.text = "اتصال قطع شد · دوباره تلاش کن"
                     speak(message)
-                } else {
+                } else if (streamBuffer.isEmpty()) {
                     appendChat("PRIME", message, persist = false)
+                } else {
+                    val target = streamView ?: addChatBubble(
+                        isUser = false,
+                        message = streamBuffer.toString()
+                    ).also { streamView = it }
+                    updateChatBubble(
+                        target,
+                        isUser = false,
+                        message = streamBuffer.toString().trim() +
+                            "\n\n" + message
+                    )
                 }
             } finally {
+                activeGenerationJob = null
                 setBusy(false)
             }
         }
+
+        activeGenerationJob = job
+        job.start()
+    }
+
+    private fun stopGeneration() {
+        val job = activeGenerationJob ?: return
+        if (!job.isActive) return
+
+        binding.tvAgentStatus.text = getString(R.string.ui_stopping_generation)
+        job.cancel(CancellationException("Stopped by user"))
     }
 
     private fun userFriendlyError(e: Exception): String {
@@ -1207,7 +1297,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateComposerButtons() {
+        if (isBusy) {
+            binding.btnMic.visibility = View.GONE
+            binding.btnSend.visibility = View.GONE
+            binding.btnVoice.visibility = View.GONE
+            binding.btnStop.visibility = View.VISIBLE
+            return
+        }
+
         val hasText = !binding.etMessage.text.isNullOrBlank()
+        binding.btnMic.visibility = View.VISIBLE
+        binding.btnStop.visibility = View.GONE
         binding.btnSend.visibility = if (hasText) View.VISIBLE else View.GONE
         binding.btnVoice.visibility = if (hasText) View.GONE else View.VISIBLE
     }
@@ -1220,20 +1320,39 @@ class MainActivity : AppCompatActivity() {
         if (message.isBlank()) return
 
         val isUser = who == "شما"
-
-        if (
-            persist &&
-            currentChatId > 0L &&
-            chatStore.chatExists(currentChatId)
-        ) {
-            chatStore.appendMessage(
-                currentChatId,
-                if (isUser) "user" else "assistant",
-                message
-            )
-            renderedMessageCount += 1
-            if (isUser) renderChatHistory()
+        if (persist) {
+            persistChatMessage(isUser, message)
         }
+        addChatBubble(isUser, message)
+    }
+
+    private fun persistChatMessage(
+        isUser: Boolean,
+        message: String
+    ) {
+        if (
+            message.isBlank() ||
+            currentChatId <= 0L ||
+            !chatStore.chatExists(currentChatId)
+        ) {
+            return
+        }
+
+        chatStore.appendMessage(
+            currentChatId,
+            if (isUser) "user" else "assistant",
+            message
+        )
+        renderedMessageCount += 1
+        if (isUser) {
+            renderChatHistory()
+        }
+    }
+
+    private fun addChatBubble(
+        isUser: Boolean,
+        message: String
+    ): TextView {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = if (isUser) Gravity.END else Gravity.START
@@ -1246,30 +1365,52 @@ class MainActivity : AppCompatActivity() {
         }
 
         val messageView = TextView(this).apply {
-            text = if (isUser) message.trim() else "PRIME\n" + message.trim()
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
+            setTextColor(
+                ContextCompat.getColor(
+                    this@MainActivity,
+                    R.color.text_primary
+                )
+            )
             textSize = 15f
             setTextIsSelectable(true)
             setLineSpacing(0f, 1.2f)
-            setPadding(
-                dp(14), dp(12), dp(14), dp(12)
-            )
+            setPadding(dp(14), dp(12), dp(14), dp(12))
             maxWidth = (resources.displayMetrics.widthPixels * 0.82f).toInt()
-            if (isUser) {
-                background = ContextCompat.getDrawable(
-                    this@MainActivity,
+            background = ContextCompat.getDrawable(
+                this@MainActivity,
+                if (isUser) {
                     R.drawable.user_message_bg
-                )
-            } else {
-                background = ContextCompat.getDrawable(this@MainActivity, R.drawable.chat_bg)
-            }
-            if (message.any { it.code in 0x0600..0x06FF }) {
-                textDirection = View.TEXT_DIRECTION_RTL
-            }
+                } else {
+                    R.drawable.chat_bg
+                }
+            )
         }
 
+        updateChatBubble(messageView, isUser, message)
         row.addView(messageView)
         binding.chatMessages.addView(row)
+        scrollChatToBottom()
+        return messageView
+    }
+
+    private fun updateChatBubble(
+        view: TextView,
+        isUser: Boolean,
+        message: String
+    ) {
+        val clean = message.trim()
+        view.text = if (isUser) clean else "PRIME\n$clean"
+        view.textDirection = if (
+            clean.any { it.code in 0x0600..0x06FF }
+        ) {
+            View.TEXT_DIRECTION_RTL
+        } else {
+            View.TEXT_DIRECTION_FIRST_STRONG
+        }
+        scrollChatToBottom()
+    }
+
+    private fun scrollChatToBottom() {
         binding.chatScrollView.post {
             binding.chatScrollView.fullScroll(View.FOCUS_DOWN)
         }
@@ -1314,6 +1455,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnSignOut.isEnabled = !busy
         binding.btnCreateNewChat.isEnabled = !busy
         binding.btnDeleteAllChats.isEnabled = !busy
+        updateComposerButtons()
         binding.tvAgentStatus.text = status ?: if (busy) "پرایم در حال انجام درخواست است…" else "آماده"
     }
 
@@ -1474,6 +1616,8 @@ class MainActivity : AppCompatActivity() {
         voiceSpeech?.stop()
         voiceSpeech?.close()
         voiceSpeech = null
+        activeGenerationJob?.cancel()
+        activeGenerationJob = null
         appScope.cancel()
         chatStore.close()
         super.onDestroy()
