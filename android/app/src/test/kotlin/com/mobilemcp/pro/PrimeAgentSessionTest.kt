@@ -238,4 +238,33 @@ class PrimeAgentSessionTest {
             fail("Expected cancellation")
         } catch (_: CancellationException) { }
     }
+
+    @Test fun unregisteredModelCommandsAreRejectedBeforeRuntimeExecution() = runBlocking {
+        ApiFixture().use { api ->
+            val agent = api.agent()
+            api.answers += """{"type":"action","command":"shell_exec","params":{"cmd":"id"}}"""
+            api.answers += """{"type":"reply","text":"فرمان ناشناخته اجرا نشد."}"""
+
+            var executions = 0
+            val outcome = turn(
+                agent,
+                "یک فرمان ناشناخته اجرا کن",
+                { _, _ ->
+                    executions += 1
+                    PrimeActionResult(true, "should not run")
+                }
+            )
+
+            assertEquals(0, executions)
+            assertEquals("فرمان ناشناخته اجرا نشد.", outcome.text)
+            assertEquals(2, api.requests.size)
+            assertTrue(
+                api.requests[1]
+                    .getJSONArray("input")
+                    .toString()
+                    .contains("Rejected unsupported tool command: shell_exec")
+            )
+        }
+    }
+
 }
