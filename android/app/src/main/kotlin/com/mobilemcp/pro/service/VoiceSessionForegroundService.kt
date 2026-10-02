@@ -107,6 +107,7 @@ class VoiceSessionForegroundService : Service() {
     private var textToSpeech: TextToSpeech? = null
     private var ttsReady = false
     private var ttsSpeaking = false
+    private var ttsFallbackAttempted = false
     private val speechQueue = ArrayDeque<String>()
     private val streamSpeechBuffer = StringBuilder()
     private var streamedSpeechStarted = false
@@ -446,7 +447,9 @@ class VoiceSessionForegroundService : Service() {
         }
     }
 
-    private fun setupTextToSpeech() {
+    private fun setupTextToSpeech(
+        forceDefaultEngine: Boolean = false
+    ) {
         try {
             val listener = TextToSpeech.OnInitListener { status ->
                 scope.launch {
@@ -454,7 +457,10 @@ class VoiceSessionForegroundService : Service() {
                 }
             }
 
-            val preferredEngine = preferredTtsEnginePackage()
+            val preferredEngine =
+                if (forceDefaultEngine) null
+                else preferredTtsEnginePackage()
+
             textToSpeech = if (preferredEngine != null) {
                 TextToSpeech(
                     applicationContext,
@@ -499,6 +505,18 @@ class VoiceSessionForegroundService : Service() {
 
         if (status != TextToSpeech.SUCCESS || tts == null) {
             ttsReady = false
+
+            if (!ttsFallbackAttempted) {
+                ttsFallbackAttempted = true
+                try {
+                    textToSpeech?.shutdown()
+                } catch (_: Throwable) {
+                }
+                textToSpeech = null
+                setupTextToSpeech(forceDefaultEngine = true)
+                return
+            }
+
             updateStatus("Voice output unavailable • check Text-to-Speech")
             if (sessionActive && !isBusy) {
                 scope.launch {
