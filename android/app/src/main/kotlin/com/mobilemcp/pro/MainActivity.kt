@@ -27,6 +27,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.GravityCompat
+import com.google.android.material.button.MaterialButton
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.mobilemcp.pro.databinding.ActivityMainBinding
@@ -56,6 +57,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var authManager: OpenAIAuthManager
     private lateinit var primeAgent: PrimeAgent
+    private lateinit var chatStore: PrimeChatStore
+    private var currentChatId: Long = -1L
+    private var renderedMessageCount: Int = 0
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var textToSpeech: TextToSpeech? = null
@@ -79,12 +83,13 @@ class MainActivity : AppCompatActivity() {
 
         authManager = OpenAIAuthManager(applicationContext)
         primeAgent = PrimeAgent(authManager)
+        chatStore = PrimeChatStore(applicationContext)
 
         setupTextToSpeech()
         setupUI()
         updateAccessibilityStatus()
         updateAuthUI()
-        startFreshChat(showGreeting = true)
+        openInitialChat()
         warmUpPrime()
 
         if (intent?.data?.scheme == "primep6") {
@@ -108,6 +113,7 @@ class MainActivity : AppCompatActivity() {
         updateAccessibilityStatus()
         updateIPAddress()
         updateAuthUI()
+        syncChatIfChanged()
 
         if (
             pendingStartPersistentVoice &&
@@ -124,9 +130,32 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupUI() {
         binding.btnMenu.setOnClickListener {
-            binding.drawerLayout.openDrawer(GravityCompat.START)
+            binding.drawerLayout.closeDrawer(Gravity.LEFT, false)
+            binding.drawerLayout.openDrawer(Gravity.RIGHT)
         }
-        binding.btnNewChat.setOnClickListener { startFreshChat(showGreeting = false) }
+        binding.btnNewChat.setOnClickListener {
+            renderChatHistory()
+            binding.drawerLayout.closeDrawer(Gravity.RIGHT, false)
+            binding.drawerLayout.openDrawer(Gravity.LEFT)
+        }
+
+        binding.btnCreateNewChat.setOnClickListener {
+            createNewChat()
+        }
+        binding.btnOpenChatHistory.setOnClickListener {
+            renderChatHistory()
+            binding.drawerLayout.closeDrawer(Gravity.RIGHT, false)
+            binding.drawerLayout.openDrawer(Gravity.LEFT)
+        }
+        binding.btnDeleteAllChats.setOnClickListener {
+            confirmDeleteAllChats()
+        }
+        binding.btnOverlayPermission.setOnClickListener {
+            openOverlayPermission()
+        }
+        binding.btnAboutPrime.setOnClickListener {
+            showAboutPrime()
+        }
 
         binding.btnConnectBanner.setOnClickListener { connectChatGpt() }
         binding.btnSignIn.setOnClickListener { connectChatGpt() }
@@ -170,9 +199,11 @@ class MainActivity : AppCompatActivity() {
             if (isServerRunning) stopServer() else startServer()
         }
 
+        binding.tvAppVersion.text = "P6 • PRIME " + BuildConfig.VERSION_NAME
         updateComposerButtons()
         updateIPAddress()
         updateServerUI()
+        renderChatHistory()
     }
 
     private fun warmUpPrime() {
