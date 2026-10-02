@@ -1,6 +1,8 @@
 package com.mobilemcp.pro
 
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -30,7 +32,12 @@ class PrimeAgent(private val auth: OpenAIAuthManager) {
         private const val RESPONSES_URL = "https://api.openai.com/v1/responses"
         private const val MAX_AGENT_STEPS = 16
         private const val MAX_UI_CHARS = 10_000
-        private const val USER_AGENT = "PRIME-P6/6.0.2"
+        private const val USER_AGENT = "PRIME-P6/6.0.7"
+
+        @Volatile
+        private var sharedAvailableModels: List<ModelChoice>? = null
+
+        private val sharedModelMutex = Mutex()
     }
 
     private val chatHistory = mutableListOf<ChatLine>()
@@ -43,6 +50,7 @@ class PrimeAgent(private val auth: OpenAIAuthManager) {
 
     fun resetSession() {
         availableModels = null
+        sharedAvailableModels = null
         fastModel = null
         actionModel = null
         chatHistory.clear()
@@ -138,7 +146,8 @@ Never wrap JSON in markdown fences.
         confirmedForTask: Boolean,
         uiProvider: suspend () -> String,
         actionRunner: suspend (String, JSONObject) -> PrimeActionResult,
-        onProgress: (String) -> Unit
+        onProgress: (String) -> Unit,
+        onTextDelta: ((String) -> Unit)? = null
     ): PrimeOutcome {
         quickIdentityReply(userText)?.let { return PrimeOutcome(it) }
 
@@ -148,13 +157,29 @@ Never wrap JSON in markdown fences.
             )
         }
 
+        quickOpenAppTarget(userText)?.let { appName ->
+            onProgress("Opening $appName")
+            val result = actionRunner(
+                "open_app",
+                JSONObject().put("name", appName)
+            )
+            val reply = if (result.success) {
+                "بازش کردم."
+            } else {
+                "نتونستم $appName رو باز کنم."
+            }
+            remember(userText, reply)
+            return PrimeOutcome(reply)
+        }
+
         if (!looksLikePhoneTask(userText)) {
             val model = ensureModel(preferFast = true)
             onProgress("Thinking")
             val answer = requestTextResponse(
                 model = model.slug,
                 instructions = conversationInstructions,
-                currentPrompt = userText
+                currentPrompt = userText,
+                onTextDelta = onTextDelta
             ).ifBlank { "پاسخی دریافت نشد." }
 
             remember(userText, answer)
@@ -289,6 +314,59 @@ Never wrap JSON in markdown fences.
         }
     }
 
+    private fun quickOpenAppTarget(text: String): String? {
+        val value = text.trim().lowercase()
+
+        val openIntent =
+            value.contains("باز کن") ||
+                value.contains("برو تو") ||
+                value.contains("برو داخل") ||
+                value.startsWith("open ") ||
+                value.startsWith("launch ")
+
+        if (!openIntent) return null
+
+        val complexTerms = listOf(
+            "پیام",
+            "بنویس",
+            "ارسال",
+            "بفرست",
+            "حذف",
+            "پاک",
+            "کلیک",
+            "بزن روی",
+            "جستجو",
+            "search",
+            "send ",
+            "type ",
+            "delete ",
+            "click "
+        )
+
+        if (complexTerms.any { value.contains(it) }) return null
+
+        val apps = listOf(
+            "تلگرام" to "Telegram",
+            "telegram" to "Telegram",
+            "کروم" to "Chrome",
+            "chrome" to "Chrome",
+            "واتساپ" to "WhatsApp",
+            "whatsapp" to "WhatsApp",
+            "اینستاگرام" to "Instagram",
+            "instagram" to "Instagram",
+            "یوتیوب" to "YouTube",
+            "youtube" to "YouTube",
+            "جیمیل" to "Gmail",
+            "gmail" to "Gmail",
+            "تنظیمات" to "Settings",
+            "settings" to "Settings"
+        )
+
+        return apps.firstOrNull { (needle, _) ->
+            value.contains(needle)
+        }?.second
+    }
+
     private fun looksLikePhoneTask(text: String): Boolean {
         val value = text.lowercase()
 
@@ -365,67 +443,113 @@ Never wrap JSON in markdown fences.
     ): List<ModelChoice> {
         if (!forceRefresh) {
             availableModels?.let { return it }
-        }
 
-        val token = auth.accessToken()
-        val models = withNetworkRetry("models") {
-            val conn = URL(MODELS_URL).openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 10_000
-            conn.readTimeout = 20_000
-            conn.setRequestProperty("Authorization", "Bearer $token")
-            conn.setRequestProperty("Accept", "application/json")
-            conn.setRequestProperty("Connection", "close")
-            conn.setRequestProperty("User-Agent", USER_AGENT)
-
-            try {
-                val status = conn.responseCode
-                val stream =
-                    if (status in 200..299) conn.inputStream else conn.errorStream
-                val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-
-                if (status !in 200..299) throw apiError(status, body)
-
-                val array = JSONObject(body).optJSONArray("models")
-                    ?: throw IllegalStateException(
-                        "No ChatGPT models are available for this account"
-                    )
-
-                val visible = mutableListOf<ModelChoice>()
-                for (i in 0 until array.length()) {
-                    val item = array.optJSONObject(i) ?: continue
-                    if (item.optString("visibility") != "list") continue
-
-                    val slug = item.optString("slug")
-                    if (slug.isBlank()) continue
-
-                    visible += ModelChoice(
-                        slug = slug,
-                        displayName =
-                            item.optString("display_name").ifBlank { slug }
-                    )
-                }
-
-                if (visible.isEmpty()) {
-                    throw IllegalStateException(
-                        "No visible ChatGPT model is available"
-                    )
-                }
-
-                visible
-            } finally {
-                conn.disconnect()
+            sharedAvailableModels?.let { shared ->
+                availableModels = shared
+                return shared
             }
         }
 
-        availableModels = models
-        return models
+        return sharedModelMutex.withLock {
+            if (!forceRefresh) {
+                availableModels?.let { return@withLock it }
+
+                sharedAvailableModels?.let { shared ->
+                    availableModels = shared
+                    return@withLock shared
+                }
+            }
+
+            val token = auth.accessToken()
+            val models = withNetworkRetry("models") {
+                val conn =
+                    URL(MODELS_URL).openConnection() as HttpURLConnection
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 8_000
+                conn.readTimeout = 15_000
+                conn.setRequestProperty(
+                    "Authorization",
+                    "Bearer $token"
+                )
+                conn.setRequestProperty(
+                    "Accept",
+                    "application/json"
+                )
+                conn.setRequestProperty(
+                    "User-Agent",
+                    USER_AGENT
+                )
+
+                try {
+                    val status = conn.responseCode
+                    val stream =
+                        if (status in 200..299) {
+                            conn.inputStream
+                        } else {
+                            conn.errorStream
+                        }
+
+                    val body = stream
+                        ?.bufferedReader()
+                        ?.use { it.readText() }
+                        .orEmpty()
+
+                    if (status !in 200..299) {
+                        throw apiError(status, body)
+                    }
+
+                    val array = JSONObject(body)
+                        .optJSONArray("models")
+                        ?: throw IllegalStateException(
+                            "No ChatGPT models are available for this account"
+                        )
+
+                    val visible = mutableListOf<ModelChoice>()
+                    for (i in 0 until array.length()) {
+                        val item =
+                            array.optJSONObject(i)
+                                ?: continue
+
+                        if (
+                            item.optString("visibility") != "list"
+                        ) {
+                            continue
+                        }
+
+                        val slug = item.optString("slug")
+                        if (slug.isBlank()) continue
+
+                        visible += ModelChoice(
+                            slug = slug,
+                            displayName =
+                                item.optString("display_name")
+                                    .ifBlank { slug }
+                        )
+                    }
+
+                    if (visible.isEmpty()) {
+                        throw IllegalStateException(
+                            "No visible ChatGPT model is available"
+                        )
+                    }
+
+                    visible
+                } finally {
+                    conn.disconnect()
+                }
+            }
+
+            availableModels = models
+            sharedAvailableModels = models
+            models
+        }
     }
 
     private suspend fun requestTextResponse(
         model: String,
         instructions: String,
-        currentPrompt: String
+        currentPrompt: String,
+        onTextDelta: ((String) -> Unit)? = null
     ): String {
         val token = auth.accessToken()
 
@@ -461,11 +585,12 @@ Never wrap JSON in markdown fences.
             conn.setRequestProperty("Authorization", "Bearer $token")
             conn.setRequestProperty("Content-Type", "application/json")
             conn.setRequestProperty("Accept", "text/event-stream")
-            conn.setRequestProperty("Connection", "close")
             conn.setRequestProperty("User-Agent", USER_AGENT)
 
+            val bodyBytes = body.toString().toByteArray(Charsets.UTF_8)
+            conn.setFixedLengthStreamingMode(bodyBytes.size)
             conn.outputStream.use {
-                it.write(body.toString().toByteArray(Charsets.UTF_8))
+                it.write(bodyBytes)
             }
 
             try {
@@ -496,8 +621,13 @@ Never wrap JSON in markdown fences.
                         }
 
                         when (event.optString("type")) {
-                            "response.output_text.delta" ->
-                                output.append(event.optString("delta"))
+                            "response.output_text.delta" -> {
+                                val delta = event.optString("delta")
+                                output.append(delta)
+                                if (delta.isNotBlank()) {
+                                    onTextDelta?.invoke(delta)
+                                }
+                            }
 
                             "response.completed" ->
                                 completed = true

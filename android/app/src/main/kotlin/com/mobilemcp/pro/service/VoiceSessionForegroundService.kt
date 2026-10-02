@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
@@ -105,7 +106,13 @@ class VoiceSessionForegroundService : Service() {
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
     private var ttsReady = false
-    private var pendingSpeech: String? = null
+    private var ttsSpeaking = false
+    private var ttsFallbackAttempted = false
+    private val speechQueue = ArrayDeque<String>()
+    private val streamSpeechBuffer = StringBuilder()
+    private var streamedSpeechStarted = false
+    private lateinit var audioManager: AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     private var sessionActive = false
     private var isBusy = false
@@ -119,6 +126,7 @@ class VoiceSessionForegroundService : Service() {
         // fully settled. Risky runtime objects are created only after PRIME is
         // successfully promoted to a microphone foreground service.
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         createNotificationChannel()
     }
 
@@ -171,7 +179,8 @@ class VoiceSessionForegroundService : Service() {
 
             val foregroundType =
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
                 } else {
                     0
                 }
@@ -203,10 +212,10 @@ class VoiceSessionForegroundService : Service() {
                 }
             }
 
-            scope.launch {
-                delay(300)
-                startListening()
-            }
+            // Audible startup check: this proves the device TTS path works
+            // before the first user request. If TTS is still initializing,
+            // the phrase stays queued and is spoken as soon as it is ready.
+            enqueueSpeech("پرایم آماده است", flush = true)
 
             return START_STICKY
         } catch (t: Throwable) {
@@ -438,138 +447,443 @@ class VoiceSessionForegroundService : Service() {
         }
     }
 
-    private fun setupTextToSpeech() {
+    private fun setupTextToSpeech(
+        forceDefaultEngine: Boolean = false
+    ) {
         try {
-            textToSpeech = TextToSpeech(applicationContext) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                ttsReady = true
-
-                textToSpeech?.setSpeechRate(1.0f)
-                textToSpeech?.setPitch(1.0f)
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    textToSpeech?.setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
+            val listener = TextToSpeech.OnInitListener { status ->
+                scope.launch {
+                    onTtsInitialized(status)
                 }
-
-                textToSpeech?.setOnUtteranceProgressListener(
-                    object : UtteranceProgressListener() {
-                        override fun onStart(utteranceId: String?) {
-                            scope.launch {
-                                updateStatus("PRIME is speaking…")
-                            }
-                        }
-
-                        override fun onError(utteranceId: String?) {
-                            scope.launch {
-                                updateStatus(
-                                    "Voice output failed • tap mic or type again"
-                                )
-                                if (sessionActive && !isBusy) {
-                                    delay(500)
-                                    startListening()
-                                }
-                            }
-                        }
-
-                        override fun onDone(utteranceId: String?) {
-                            scope.launch {
-                                if (sessionActive && !isBusy) {
-                                    delay(350)
-                                    startListening()
-                                }
-                            }
-                        }
-                    }
-                )
-
-                val queued = pendingSpeech
-                pendingSpeech = null
-                if (!queued.isNullOrBlank()) {
-                    scope.launch {
-                        delay(80)
-                        speak(queued)
-                    }
-                }
-            } else {
-                ttsReady = false
-                updateStatus("Voice output is unavailable on this phone")
             }
-        }
+
+            val preferredEngine =
+                if (forceDefaultEngine) null
+                else preferredTtsEnginePackage()
+
+            textToSpeech = if (preferredEngine != null) {
+                TextToSpeech(
+                    applicationContext,
+                    listener,
+                    preferredEngine
+                )
+            } else {
+                TextToSpeech(applicationContext, listener)
+            }
         } catch (t: Throwable) {
             ttsReady = false
             textToSpeech = null
-            pendingSpeech = null
             lastStartError =
-                "TextToSpeech: " + (t.message ?: t::class.java.simpleName)
+                "TextToSpeech: " +
+                    (t.message ?: t::class.java.simpleName)
+            updateStatus("Voice output unavailable • speech input still works")
+            scope.launch {
+                delay(250)
+                startListening()
+            }
         }
     }
 
-    private fun speak(text: String) {
-        if (text.isBlank()) {
-            scope.launch { startListening() }
-            return
-        }
+    private fun preferredTtsEnginePackage(): String? {
+        val candidates = listOf(
+            "com.google.android.tts",
+            "com.samsung.SMT"
+        )
 
-        if (!ttsReady) {
-            pendingSpeech = text
-            updateStatus("Preparing PRIME voice…")
-            return
+        return candidates.firstOrNull { packageName ->
+            try {
+                packageManager.getPackageInfo(packageName, 0)
+                true
+            } catch (_: Throwable) {
+                false
+            }
         }
+    }
 
+    private fun onTtsInitialized(status: Int) {
         val tts = textToSpeech
-        if (tts == null) {
-            pendingSpeech = text
-            updateStatus("Preparing PRIME voice…")
+
+        if (status != TextToSpeech.SUCCESS || tts == null) {
+            ttsReady = false
+
+            if (!ttsFallbackAttempted) {
+                ttsFallbackAttempted = true
+                try {
+                    textToSpeech?.shutdown()
+                } catch (_: Throwable) {
+                }
+                textToSpeech = null
+                setupTextToSpeech(forceDefaultEngine = true)
+                return
+            }
+
+            updateStatus("Voice output unavailable • check Text-to-Speech")
+            if (sessionActive && !isBusy) {
+                scope.launch {
+                    delay(300)
+                    startListening()
+                }
+            }
             return
         }
 
-        val language = if (text.any { it.code in 0x0600..0x06FF }) {
+        try {
+            tts.setSpeechRate(1.04f)
+            tts.setPitch(1.0f)
+            tts.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+
+            tts.setOnUtteranceProgressListener(
+                object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        scope.launch {
+                            ttsSpeaking = true
+                            updateStatus("PRIME is speaking…")
+                        }
+                    }
+
+                    override fun onDone(utteranceId: String?) {
+                        scope.launch {
+                            ttsSpeaking = false
+                            pumpSpeechQueue()
+                        }
+                    }
+
+                    override fun onError(utteranceId: String?) {
+                        scope.launch {
+                            onSpeechError("TTS engine error")
+                        }
+                    }
+
+                    override fun onError(
+                        utteranceId: String?,
+                        errorCode: Int
+                    ) {
+                        scope.launch {
+                            onSpeechError("TTS error $errorCode")
+                        }
+                    }
+
+                    override fun onStop(
+                        utteranceId: String?,
+                        interrupted: Boolean
+                    ) {
+                        scope.launch {
+                            ttsSpeaking = false
+                            if (!interrupted) {
+                                pumpSpeechQueue()
+                            }
+                        }
+                    }
+                }
+            )
+
+            ttsReady = true
+            updateStatus("PRIME voice ready")
+            pumpSpeechQueue()
+        } catch (t: Throwable) {
+            ttsReady = false
+            lastStartError =
+                "TextToSpeech init: " +
+                    (t.message ?: t::class.java.simpleName)
+            updateStatus("Voice output unavailable • check Text-to-Speech")
+            if (sessionActive && !isBusy) {
+                scope.launch {
+                    delay(300)
+                    startListening()
+                }
+            }
+        }
+    }
+
+    private fun configureTtsForText(
+        tts: TextToSpeech,
+        text: String
+    ) {
+        val targetLocale = if (
+            text.any { it.code in 0x0600..0x06FF }
+        ) {
             Locale("fa", "IR")
         } else {
             Locale.getDefault()
         }
 
-        val result = tts.setLanguage(language)
-        if (
-            result == TextToSpeech.LANG_MISSING_DATA ||
-            result == TextToSpeech.LANG_NOT_SUPPORTED
-        ) {
-            tts.setLanguage(Locale.getDefault())
+        val matchingVoice = try {
+            tts.voices
+                ?.filter {
+                    it.locale.language.equals(
+                        targetLocale.language,
+                        ignoreCase = true
+                    )
+                }
+                ?.sortedWith(
+                    compareBy<android.speech.tts.Voice> {
+                        it.isNetworkConnectionRequired
+                    }.thenByDescending {
+                        it.quality
+                    }
+                )
+                ?.firstOrNull()
+        } catch (_: Throwable) {
+            null
         }
 
-        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (matchingVoice != null) {
+            try {
+                tts.voice = matchingVoice
+                return
+            } catch (_: Throwable) {
+            }
+        }
+
+        val languageResult = try {
+            tts.setLanguage(targetLocale)
+        } catch (_: Throwable) {
+            TextToSpeech.LANG_NOT_SUPPORTED
+        }
+
         if (
-            audio.getStreamVolume(AudioManager.STREAM_MUSIC) == 0
+            languageResult == TextToSpeech.LANG_MISSING_DATA ||
+            languageResult == TextToSpeech.LANG_NOT_SUPPORTED
         ) {
+            try {
+                tts.setLanguage(Locale.getDefault())
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun requestSpeechAudioFocus() {
+        try {
+            val request = AudioFocusRequest.Builder(
+                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+            )
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setOnAudioFocusChangeListener { }
+                .build()
+
+            audioFocusRequest = request
+            audioManager.requestAudioFocus(request)
+        } catch (_: Throwable) {
+            // TTS can still speak even if a vendor audio stack rejects focus.
+        }
+    }
+
+    private fun abandonSpeechAudioFocus() {
+        val request = audioFocusRequest ?: return
+        try {
+            audioManager.abandonAudioFocusRequest(request)
+        } catch (_: Throwable) {
+        }
+        audioFocusRequest = null
+    }
+
+    private fun enqueueSpeech(
+        text: String,
+        flush: Boolean = false
+    ) {
+        val clean = text.trim()
+        if (clean.isBlank()) {
+            if (sessionActive && !isBusy) {
+                startListening()
+            }
+            return
+        }
+
+        speechRecognizer?.cancel()
+
+        if (flush) {
+            try {
+                textToSpeech?.stop()
+            } catch (_: Throwable) {
+            }
+            ttsSpeaking = false
+            speechQueue.clear()
+        }
+
+        speechQueue.addLast(clean.take(2500))
+
+        if (!ttsReady) {
+            updateStatus("Preparing PRIME voice…")
+            return
+        }
+
+        pumpSpeechQueue()
+    }
+
+    private fun pumpSpeechQueue() {
+        if (!ttsReady || ttsSpeaking) return
+
+        if (speechQueue.isEmpty()) {
+            abandonSpeechAudioFocus()
+            if (sessionActive && !isBusy && !overlayFocusable) {
+                scope.launch {
+                    delay(220)
+                    startListening()
+                }
+            }
+            return
+        }
+
+        val tts = textToSpeech
+        if (tts == null) {
+            ttsReady = false
+            updateStatus("Voice output unavailable")
+            if (sessionActive && !isBusy) startListening()
+            return
+        }
+
+        val next = speechQueue.removeFirst()
+        configureTtsForText(tts, next)
+
+        if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) == 0) {
             updateStatus("Media volume is muted")
         }
 
+        requestSpeechAudioFocus()
+
         val params = Bundle().apply {
+            putFloat(
+                TextToSpeech.Engine.KEY_PARAM_VOLUME,
+                1.0f
+            )
             putInt(
                 TextToSpeech.Engine.KEY_PARAM_STREAM,
                 AudioManager.STREAM_MUSIC
             )
-            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
         }
 
-        val resultCode = tts.speak(
-            text.take(2500),
-            TextToSpeech.QUEUE_FLUSH,
-            params,
-            "prime-overlay-" + System.currentTimeMillis()
-        )
+        val utteranceId =
+            "prime-voice-" + System.currentTimeMillis()
+
+        val resultCode = try {
+            tts.speak(
+                next,
+                TextToSpeech.QUEUE_FLUSH,
+                params,
+                utteranceId
+            )
+        } catch (t: Throwable) {
+            lastStartError =
+                "TTS speak: " +
+                    (t.message ?: t::class.java.simpleName)
+            TextToSpeech.ERROR
+        }
 
         if (resultCode == TextToSpeech.ERROR) {
-            updateStatus("Voice output failed • check Text-to-Speech settings")
             scope.launch {
-                delay(650)
-                startListening()
+                onSpeechError("TTS speak returned ERROR")
             }
+        } else {
+            // Some vendor engines call onStart late. Mark the queue busy now
+            // so a second chunk cannot flush the first one before playback.
+            ttsSpeaking = true
+        }
+    }
+
+    private fun onSpeechError(reason: String) {
+        ttsSpeaking = false
+        lastStartError = reason
+        abandonSpeechAudioFocus()
+
+        if (speechQueue.isNotEmpty()) {
+            pumpSpeechQueue()
+        } else {
+            updateStatus(
+                "Voice output failed • check media volume / TTS settings"
+            )
+            if (sessionActive && !isBusy && !overlayFocusable) {
+                scope.launch {
+                    delay(500)
+                    startListening()
+                }
+            }
+        }
+    }
+
+    private fun speak(text: String) {
+        enqueueSpeech(text, flush = false)
+    }
+
+    private fun resetStreamSpeech() {
+        streamSpeechBuffer.setLength(0)
+        streamedSpeechStarted = false
+    }
+
+    private fun acceptStreamSpeechDelta(delta: String) {
+        if (delta.isBlank()) return
+
+        streamSpeechBuffer.append(delta)
+
+        while (true) {
+            val value = streamSpeechBuffer.toString()
+            if (value.isBlank()) return
+
+            var boundary = -1
+            for (index in value.indices) {
+                val ch = value[index]
+                if (
+                    index >= 24 &&
+                    (
+                        ch == '.' ||
+                        ch == '!' ||
+                        ch == '?' ||
+                        ch == '؟' ||
+                        ch == '\n'
+                    )
+                ) {
+                    boundary = index + 1
+                    break
+                }
+            }
+
+            if (boundary < 0 && value.length >= 110) {
+                val preferred = value.lastIndexOf(
+                    ' ',
+                    startIndex = 90
+                )
+                boundary = if (preferred >= 45) {
+                    preferred + 1
+                } else {
+                    90
+                }
+            }
+
+            if (boundary <= 0) return
+
+            val chunk = value.substring(0, boundary).trim()
+            streamSpeechBuffer.delete(0, boundary)
+
+            if (chunk.isNotBlank()) {
+                streamedSpeechStarted = true
+                enqueueSpeech(chunk)
+            }
+        }
+    }
+
+    private fun finishStreamSpeech(fullReply: String) {
+        val remaining = streamSpeechBuffer
+            .toString()
+            .trim()
+        streamSpeechBuffer.setLength(0)
+
+        if (streamedSpeechStarted) {
+            if (remaining.isNotBlank()) {
+                enqueueSpeech(remaining)
+            } else {
+                pumpSpeechQueue()
+            }
+        } else {
+            enqueueSpeech(fullReply)
         }
     }
 
@@ -759,6 +1073,7 @@ class VoiceSessionForegroundService : Service() {
         }
 
         isBusy = true
+        resetStreamSpeech()
         setControlsEnabled(false)
         updateStatus("Thinking…")
 
@@ -776,6 +1091,11 @@ class VoiceSessionForegroundService : Service() {
                             scope.launch {
                                 updateStatus(progress)
                             }
+                        },
+                        onTextDelta = { delta ->
+                            scope.launch {
+                                acceptStreamSpeechDelta(delta)
+                            }
                         }
                     )
                 }
@@ -792,14 +1112,16 @@ class VoiceSessionForegroundService : Service() {
 
                 isBusy = false
                 setControlsEnabled(true)
-                speak(outcome.text)
+                finishStreamSpeech(outcome.text)
             } catch (e: Exception) {
                 isBusy = false
                 setControlsEnabled(true)
 
                 val message = userFriendlyError(e)
+                streamSpeechBuffer.setLength(0)
+                streamedSpeechStarted = false
                 updateStatus("Connection issue")
-                speak(message)
+                enqueueSpeech(message, flush = false)
             }
         }
     }
