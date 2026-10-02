@@ -87,7 +87,9 @@ Behavior:
 - Prefer semantic actions such as click_element over coordinate taps.
 - Do not invent success. Only say a task is done after observed/action results support it.
 - If login, OTP, CAPTCHA, banking authentication, password-manager unlock, or another protected step needs human input, tell the user to take over.
-- Before a consequential final action such as sending a message/post, deleting data, making a purchase/payment, changing account/security settings, or publishing content, return a confirmation unless confirmed_for_task is true.
+- Treat the conversation as one continuous phone-control session. Short follow-ups such as "بنویس سلام", "پاک کن", "حالا بفرست", or "برگرد" refer to the app/task established by prior turns unless the current UI clearly contradicts it.
+- Before a consequential final action such as sending a message/post, deleting an already-sent message/file/data, making a purchase/payment, changing account/security settings, or publishing content, return a confirmation unless confirmed_for_task is true.
+- Editing or clearing an unsent draft is reversible and does not require confirmation.
 - If confirmed_for_task is true, do not ask again for the same final action. Inspect the current screen first and do not duplicate completed work.
 
 For every decision output exactly ONE JSON object and nothing else.
