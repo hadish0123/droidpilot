@@ -71,5 +71,14 @@
                 android:value="User-enabled PRIME local device bridge for AI-assisted Android automation" />
         </service>
 
+        <service
+            android:name=".service.RemoteBridgeForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-enabled PRIME remote bridge for ChatGPT-assisted Android automation" />
+        </service>
+
     </application>
 </manifest>
