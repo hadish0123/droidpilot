@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { RemotePhoneHub } from "./remote-phone-hub.js";
 import { createRemoteServer } from "./remote-server.js";
 
-const port = Number(process.env.PORT || 3000);
+const port = Number(process.env.PORT || 3000);\nconst mcpBearer = (process.env.PRIME_MCP_BEARER || "").trim();
 const pairingSecret = (process.env.PRIME_PAIRING_SECRET || "").trim();
 const configuredPairingCode = (process.env.PRIME_PAIRING_CODE || "").trim();
 const publicBaseUrl = (process.env.PRIME_PUBLIC_BASE_URL || "").replace(/\/$/, "");
