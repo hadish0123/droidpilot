@@ -27,12 +27,16 @@ class RemoteBridgeClient(
     companion object {
         private const val TAG = "RemoteBridgeClient"
 
-        fun pair(relayBaseUrl: String, pairingCode: String, deviceId: String): PairingResult {
-            require(pairingCode.matches(Regex("\\d{6}"))) {
-                "Pairing code must be 6 digits"
-            }
+        fun pair(
+            relayBaseUrl: String,
+            deviceId: String,
+            deviceProof: String
+        ): PairingResult {
             require(deviceId.matches(Regex("[a-zA-Z0-9_-]{8,128}"))) {
                 "Invalid device identifier"
+            }
+            require(deviceProof.length >= 32) {
+                "Invalid device proof"
             }
 
             val base = relayBaseUrl.trim().trimEnd('/')
@@ -50,8 +54,8 @@ class RemoteBridgeClient(
             }
 
             val body = JSONObject()
-                .put("code", pairingCode)
                 .put("deviceId", deviceId)
+                .put("deviceProof", deviceProof)
                 .toString()
 
             connection.outputStream.use { output ->
