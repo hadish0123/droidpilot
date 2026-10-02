@@ -627,7 +627,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Chats & data"
+                android:text="Chats &amp; data"
                 android:textColor="@color/text_muted"
                 android:textSize="12sp"
                 android:textStyle="bold" />
