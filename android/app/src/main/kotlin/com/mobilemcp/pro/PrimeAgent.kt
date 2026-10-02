@@ -272,7 +272,7 @@ Never wrap JSON in markdown fences.
                         (if (result.success) "OK - " else "ERROR - ") +
                         result.summary
 
-                    if (result.success) delay(300)
+                    if (result.success) delay(180)
                 }
 
                 else -> {
@@ -556,7 +556,7 @@ Never wrap JSON in markdown fences.
         return withNetworkRetry("responses") {
             val input = JSONArray()
 
-            chatHistory.takeLast(8).forEach { line ->
+            chatHistory.takeLast(6).forEach { line ->
                 input.put(
                     JSONObject()
                         .put("role", line.role)
