@@ -780,20 +780,6 @@
                 android:textColor="@color/text_muted"
                 android:textSize="12sp" />
 
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/etRemotePairingCode"
-                android:layout_width="match_parent"
-                android:layout_height="44dp"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/edit_text_bg"
-                android:gravity="center"
-                android:hint="@string/ui_remote_pairing_hint"
-                android:inputType="number"
-                android:maxLength="6"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_muted"
-                android:textSize="13sp" />
-
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnPairRemote"
                 android:layout_width="match_parent"
