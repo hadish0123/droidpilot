@@ -1,5 +1,6 @@
 package com.mobilemcp.pro
 
+import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -40,6 +41,12 @@ class PrimeAgent(private val auth: OpenAIAuthManager) {
     val engineLabel: String
         get() = selectedDisplayName ?: "ChatGPT plan"
 
+    fun resetSession() {
+        selectedModel = null
+        selectedDisplayName = null
+        chatHistory.clear()
+    }
+
     private val instructions = """
 You are PRIME, product model P6, a private Android action assistant running on the user's own phone.
 Identity rules:
@@ -57,7 +64,7 @@ Behavior:
 - Do not invent success. Only say a task is done after the observed UI/action results support it.
 - If login, OTP, CAPTCHA, banking authentication, password-manager unlock, or another protected step needs human input, tell the user to take over for that step.
 - Before a consequential final action such as sending a message/post, deleting data, making a purchase/payment, changing account/security settings, or publishing content, return a confirmation unless confirmed_for_task is true.
-- If confirmed_for_task is true, do not ask again for the same final action.
+- If confirmed_for_task is true, do not ask again for the same final action. Inspect the current screen first because earlier preparation may already be present; never repeat a completed step or duplicate typed content.
 
 For every decision, output exactly ONE JSON object and nothing else.
 
@@ -164,6 +171,7 @@ Never wrap JSON in markdown fences.
                     }
                     actionHistory += command + ": " +
                         (if (result.success) "OK - " else "ERROR - ") + result.summary
+                    if (result.success) delay(450)
                 }
 
                 else -> {
