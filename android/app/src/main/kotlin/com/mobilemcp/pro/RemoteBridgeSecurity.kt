@@ -11,6 +11,7 @@ class RemoteBridgeSecurity(
 
         private const val DEVICE_ID_KEY = "remote_bridge_device_id_v1"
         private const val CREDENTIAL_KEY = "remote_bridge_credential_v1"
+        private const val MCP_URL_KEY = "remote_bridge_mcp_url_v1"
         private const val ENABLED_KEY = "remote_bridge_enabled_v1"
     }
 
@@ -30,6 +31,14 @@ class RemoteBridgeSecurity(
         secureStore.putString(CREDENTIAL_KEY, value)
     }
 
+    fun mcpUrl(): String? =
+        secureStore.getString(MCP_URL_KEY)?.trim()?.takeIf { it.startsWith("https://") }
+
+    fun saveMcpUrl(value: String) {
+        require(value.startsWith("https://")) { "Remote MCP URL is invalid" }
+        secureStore.putString(MCP_URL_KEY, value)
+    }
+
     fun isEnabled(): Boolean =
         secureStore.getString(ENABLED_KEY) == "1"
 
@@ -39,6 +48,7 @@ class RemoteBridgeSecurity(
 
     fun clearCredential() {
         secureStore.remove(CREDENTIAL_KEY)
+        secureStore.remove(MCP_URL_KEY)
         setEnabled(false)
     }
 }
