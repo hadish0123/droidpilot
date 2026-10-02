@@ -35,7 +35,7 @@ internal data class PrimeApiEndpoints(
 
 class PrimeAgent internal constructor(
     private val auth: PrimeCredentials,
-    private val endpoints: PrimeApiEndpoints = PrimeApiEndpoints(),
+    endpoints: PrimeApiEndpoints = PrimeApiEndpoints(),
     private val provider: AiProvider = OpenAIResponsesProvider(auth, endpoints)
 ) {
     constructor(authManager: OpenAIAuthManager) : this(object : PrimeCredentials {
@@ -469,30 +469,5 @@ Never wrap JSON in markdown fences.
         return try { JSONObject(cleaned) } catch (_: Exception) {
             JSONObject().put("type", "invalid")
         }
-    }
-
-    private fun apiError(status: Int, body: String): Exception {
-        val message = try {
-            val json = JSONObject(body)
-            json.optString("detail").ifBlank {
-                json.optJSONObject("error")?.optString("message").orEmpty()
-            }
-        } catch (_: Exception) {
-            ""
-        }
-
-        val friendly = when {
-            message.isNotBlank() -> message
-            status == 401 ->
-                "ChatGPT connection expired. Connect the account again."
-            status == 403 ->
-                "ChatGPT plan access is not available for this request."
-            status == 429 ->
-                "ChatGPT usage limit reached. Try again later."
-            else ->
-                "ChatGPT request failed with HTTP $status"
-        }
-
-        return IllegalStateException(friendly)
     }
 }
