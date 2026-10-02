@@ -134,24 +134,17 @@ Need user confirmation:
 {"type":"confirmation","text":"..."}
 
 Phone action:
-{"type":"action","command":"COMMAND","params":{...},"note":"short progress text"}
+{"type":"action","command":"COMMAND","params":{...},"risk":"safe|read|write|sensitive|destructive","note":"short progress text"}
 
-Allowed COMMAND values:
-- open_app params: {"name":"Telegram"} or {"package":"org.telegram.messenger"}
-- open_url params: {"url":"https://example.com"}
-- click_element params: {"text":"..."} or {"id":"..."} or {"contentDescription":"..."}
-- tap params: {"x":123,"y":456}
-- long_press params: {"x":123,"y":456,"duration":1000}
-- set_text params: {"text":"..."}
-- type_text params: {"text":"..."}
-- scroll params: {"direction":"up|down|left|right","amount":500}
-- swipe params: {"startX":1,"startY":2,"endX":3,"endY":4,"duration":300}
-- press_key params: {"key":"back|home|recents|notifications|quick_settings"}
-- wait_for_element params: {"text":"...","timeout":10000}
-- get_ui_tree params: {}
-- get_focused params: {}
-- find_element params: {"text":"..."} or {"id":"..."} or {"contentDescription":"..."}
-- get_device_info params: {}
+Allowed COMMAND values are runtime-enforced:
+${PrimeToolRegistry.promptContract()}
+
+Risk rules:
+- Report the real impact in the risk field. Runtime can only elevate risk, never lower a tool's minimum risk.
+- Use sensitive for consequential final actions such as send/publish/share/payment/account/security changes.
+- Use destructive for deletion or another potentially irreversible action.
+- Draft editing and ordinary navigation are not final consequential actions.
+- Runtime may require confirmation even if you under-classify a semantic target.
 
 Never wrap JSON in markdown fences.
 """.trimIndent()
@@ -214,6 +207,7 @@ Never wrap JSON in markdown fences.
         }
 
         phoneContext = true
+        val toolRuntime = PrimeToolRuntime(actionRunner)
         val model = ensureModel(preferFast = false)
         val actionHistory = mutableListOf<String>()
         var capabilityCorrectionSent = false
@@ -303,25 +297,51 @@ Never wrap JSON in markdown fences.
                     }
 
                     val params = decision.optJSONObject("params") ?: JSONObject()
+                    val declaredRisk = decision.optString("risk")
                     val note = decision.optString("note").ifBlank { command }
-                    onProgress(note)
 
                     coroutineContext.ensureActive()
-                    val result = try {
-                        actionRunner(command, params)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        PrimeActionResult(false, e.message ?: "Action failed")
-                    }
+                    when (
+                        val execution = toolRuntime.execute(
+                            command = command,
+                            params = params,
+                            declaredRisk = declaredRisk,
+                            confirmedForTask = confirmedForTask
+                        )
+                    ) {
+                        is PrimeToolExecution.Rejected -> {
+                            actionHistory += "Rejected tool call: " + execution.message
+                            return@repeat
+                        }
 
-                    actionHistory += command + ": " +
-                        (if (result.success) "OK - " else "ERROR - ") +
-                        result.summary
+                        is PrimeToolExecution.NeedsConfirmation -> {
+                            return PrimeOutcome(
+                                execution.message,
+                                needsConfirmation = true
+                            )
+                        }
 
-                    if (result.success) delay(350)
-                    else if (result.summary.contains("Accessibility", true) || result.summary.contains("ACCESSIBILITY_OFF")) {
-                        return PrimeOutcome("برای کنترل گوشی، دسترسی Accessibility را از تنظیمات PRIME فعال کن.")
+                        is PrimeToolExecution.Completed -> {
+                            onProgress(note)
+                            val result = execution.result
+
+                            actionHistory += command + " [" +
+                                execution.assessment.risk.name.lowercase() +
+                                "]: " +
+                                (if (result.success) "OK - " else "ERROR - ") +
+                                result.summary
+
+                            if (result.success) {
+                                delay(350)
+                            } else if (
+                                result.summary.contains("Accessibility", true) ||
+                                result.summary.contains("ACCESSIBILITY_OFF")
+                            ) {
+                                return PrimeOutcome(
+                                    "برای کنترل گوشی، دسترسی Accessibility را از تنظیمات PRIME فعال کن."
+                                )
+                            }
+                        }
                     }
                 }
 
