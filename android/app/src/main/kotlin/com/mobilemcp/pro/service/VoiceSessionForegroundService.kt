@@ -108,6 +108,7 @@ class VoiceSessionForegroundService : Service() {
     private var ttsReady = false
     private var ttsSpeaking = false
     private var ttsFallbackAttempted = false
+    private var ttsPreferredEngineUsed: String? = null
     private val speechQueue = ArrayDeque<String>()
     private val streamSpeechBuffer = StringBuilder()
     private var streamedSpeechStarted = false
@@ -216,6 +217,21 @@ class VoiceSessionForegroundService : Service() {
             // before the first user request. If TTS is still initializing,
             // the phrase stays queued and is spoken as soon as it is ready.
             enqueueSpeech("پرایم آماده است", flush = true)
+
+            scope.launch {
+                delay(2_500)
+                if (
+                    sessionActive &&
+                    !ttsReady &&
+                    !isBusy &&
+                    !overlayFocusable
+                ) {
+                    updateStatus(
+                        "Voice input ready • TTS still initializing"
+                    )
+                    startListening()
+                }
+            }
 
             return START_STICKY
         } catch (t: Throwable) {
