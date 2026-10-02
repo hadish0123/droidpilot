@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.media.AudioAttributes
 import android.media.AudioManager
@@ -31,6 +32,7 @@ import android.widget.EditText
 import android.widget.TextView
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.google.android.material.button.MaterialButton
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -75,6 +77,10 @@ class VoiceSessionForegroundService : Service() {
         @Volatile
         var isOverlayRunning: Boolean = false
             private set
+
+        @Volatile
+        var lastStartError: String? = null
+            private set
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -82,6 +88,7 @@ class VoiceSessionForegroundService : Service() {
     private lateinit var authManager: OpenAIAuthManager
     private lateinit var primeAgent: PrimeAgent
     private lateinit var chatStore: PrimeChatStore
+    private var runtimeInitialized = false
     private var activeChatId: Long = -1L
     private lateinit var windowManager: WindowManager
 
@@ -107,15 +114,25 @@ class VoiceSessionForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
 
+        // Keep onCreate intentionally lightweight. Samsung/Android 14 may
+        // construct the service before microphone foreground eligibility has
+        // fully settled. Risky runtime objects are created only after PRIME is
+        // successfully promoted to a microphone foreground service.
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        createNotificationChannel()
+    }
+
+    private fun initializeRuntime() {
+        if (runtimeInitialized) return
+
         authManager = OpenAIAuthManager(applicationContext)
         primeAgent = PrimeAgent(authManager)
         chatStore = PrimeChatStore(applicationContext)
         activeChatId = resolveActiveChatId()
         restoreActiveChatContext()
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-
-        createNotificationChannel()
         setupTextToSpeech()
+
+        runtimeInitialized = true
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -125,46 +142,111 @@ class VoiceSessionForegroundService : Service() {
         flags: Int,
         startId: Int
     ): Int {
-        startForeground(NOTIFICATION_ID, buildNotification())
+        val action = intent?.action ?: ACTION_START
 
-        when (intent?.action ?: ACTION_START) {
-            ACTION_STOP -> {
-                stopPersistentVoice()
-                return START_NOT_STICKY
+        if (action == ACTION_STOP) {
+            stopPersistentVoice()
+            return START_NOT_STICKY
+        }
+
+        lastStartError = null
+
+        try {
+            if (
+                ActivityCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.RECORD_AUDIO
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                throw SecurityException(
+                    "PRIME Voice needs microphone permission before starting"
+                )
             }
 
-            ACTION_START -> {
-                if (!Settings.canDrawOverlays(this)) {
-                    updateStatus("Overlay permission is required")
-                    stopSelf()
-                    return START_NOT_STICKY
+            if (!Settings.canDrawOverlays(this)) {
+                throw SecurityException(
+                    "PRIME Voice needs Display over other apps permission"
+                )
+            }
+
+            val foregroundType =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                } else {
+                    0
                 }
 
-                if (!authManager.isSignedIn()) {
-                    stopSelf()
-                    return START_NOT_STICKY
-                }
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                buildNotification(),
+                foregroundType
+            )
 
-                sessionActive = true
-                showOverlay()
-                isOverlayRunning = true
+            initializeRuntime()
 
-                scope.launch(Dispatchers.IO) {
-                    try {
-                        primeAgent.warmUp()
-                    } catch (_: Exception) {
-                        // Best effort only.
-                    }
-                }
+            if (!authManager.isSignedIn()) {
+                throw IllegalStateException(
+                    "Connect ChatGPT before starting PRIME Voice"
+                )
+            }
 
-                scope.launch {
-                    delay(250)
-                    startListening()
+            sessionActive = true
+            showOverlay()
+            isOverlayRunning = true
+
+            scope.launch(Dispatchers.IO) {
+                try {
+                    primeAgent.warmUp()
+                } catch (_: Throwable) {
+                    // Best effort only. The first request can warm up instead.
                 }
+            }
+
+            scope.launch {
+                delay(300)
+                startListening()
+            }
+
+            return START_STICKY
+        } catch (t: Throwable) {
+            handleStartFailure(t)
+            return START_NOT_STICKY
+        }
+    }
+
+    private fun handleStartFailure(error: Throwable) {
+        sessionActive = false
+        isOverlayRunning = false
+
+        val compact = buildString {
+            append(error::class.java.simpleName)
+            val message = error.message?.trim().orEmpty()
+            if (message.isNotBlank()) {
+                append(": ")
+                append(message.take(240))
             }
         }
 
-        return START_STICKY
+        lastStartError = compact
+
+        try {
+            getSharedPreferences(
+                "prime_voice_diagnostics",
+                Context.MODE_PRIVATE
+            ).edit()
+                .putString("last_error", compact)
+                .putLong("last_error_at", System.currentTimeMillis())
+                .apply()
+        } catch (_: Throwable) {
+        }
+
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (_: Throwable) {
+        }
+
+        stopSelf()
     }
 
     private fun createNotificationChannel() {
@@ -273,7 +355,17 @@ class VoiceSessionForegroundService : Service() {
         overlayParams = params
         overlayFocusable = false
 
-        windowManager.addView(view, params)
+        try {
+            windowManager.addView(view, params)
+        } catch (t: Throwable) {
+            overlayView = null
+            overlayParams = null
+            throw IllegalStateException(
+                "Could not create PRIME Voice overlay",
+                t
+            )
+        }
+
         updateStatus("Listening…")
         updateContext("Persistent voice • P6 • apps stay underneath")
     }
@@ -347,7 +439,8 @@ class VoiceSessionForegroundService : Service() {
     }
 
     private fun setupTextToSpeech() {
-        textToSpeech = TextToSpeech(applicationContext) { status ->
+        try {
+            textToSpeech = TextToSpeech(applicationContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 ttsReady = true
 
@@ -406,6 +499,13 @@ class VoiceSessionForegroundService : Service() {
                 ttsReady = false
                 updateStatus("Voice output is unavailable on this phone")
             }
+        }
+        } catch (t: Throwable) {
+            ttsReady = false
+            textToSpeech = null
+            pendingSpeech = null
+            lastStartError =
+                "TextToSpeech: " + (t.message ?: t::class.java.simpleName)
         }
     }
 
@@ -491,9 +591,10 @@ class VoiceSessionForegroundService : Service() {
 
         if (speechRecognizer != null) return true
 
-        speechRecognizer = SpeechRecognizer
-            .createSpeechRecognizer(this)
-            .also { recognizer ->
+        speechRecognizer = try {
+            SpeechRecognizer
+                .createSpeechRecognizer(this)
+                .also { recognizer ->
                 recognizer.setRecognitionListener(
                     object : RecognitionListener {
                         override fun onReadyForSpeech(params: Bundle?) {
@@ -568,8 +669,15 @@ class VoiceSessionForegroundService : Service() {
                     }
                 )
             }
+        } catch (t: Throwable) {
+            lastStartError =
+                "SpeechRecognizer: " +
+                    (t.message ?: t::class.java.simpleName)
+            updateStatus("Voice input failed • tap mic to retry")
+            null
+        }
 
-        return true
+        return speechRecognizer != null
     }
 
     private fun startListening() {
@@ -607,7 +715,10 @@ class VoiceSessionForegroundService : Service() {
 
         try {
             speechRecognizer?.startListening(intent)
-        } catch (_: Exception) {
+        } catch (t: Throwable) {
+            lastStartError =
+                "Speech start: " +
+                    (t.message ?: t::class.java.simpleName)
             updateStatus("Voice paused • tap the mic to retry")
         }
     }
