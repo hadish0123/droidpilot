@@ -1,0 +1,68 @@
+name: PRIME P6 CI
+
+on:
+  push:
+    branches:
+      - master
+      - rebuild/prime-p6
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Build PRIME P6 debug APK
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon clean assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/PRIME-P6-debug.apk
+
+      - name: Upload PRIME P6 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PRIME-P6-APK
+          path: /tmp/PRIME-P6-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  mcp:
+    name: MCP bridge
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: mcp-server
+        run: npm ci
+
+      - name: Compile PRIME P6 MCP bridge
+        working-directory: mcp-server
+        run: npm run build
