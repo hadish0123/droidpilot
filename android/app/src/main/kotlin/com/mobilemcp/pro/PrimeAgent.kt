@@ -4,16 +4,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.coroutineContext
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import org.json.JSONArray
 import org.json.JSONObject
-import java.io.IOException
-import java.net.ConnectException
-import java.net.HttpURLConnection
-import java.net.SocketTimeoutException
-import java.net.URL
-import java.net.UnknownHostException
 
 data class PrimeActionResult(
     val success: Boolean,
@@ -25,51 +16,40 @@ data class PrimeOutcome(
     val needsConfirmation: Boolean = false
 )
 
-internal interface PrimeCredentials {
-    fun isSignedIn(): Boolean
-    suspend fun accessToken(): String
-}
-
-internal data class PrimeApiEndpoints(
-    val models: String = "https://api.openai.com/v1/models",
-    val responses: String = "https://api.openai.com/v1/responses"
-)
-
 class PrimeAgent internal constructor(
-    private val auth: PrimeCredentials,
-    private val endpoints: PrimeApiEndpoints = PrimeApiEndpoints()
+    private val provider: AiProvider
 ) {
-    constructor(authManager: OpenAIAuthManager) : this(object : PrimeCredentials {
-        override fun isSignedIn() = authManager.isSignedIn()
-        override suspend fun accessToken() = authManager.accessToken()
-    })
+    internal constructor(
+        auth: PrimeCredentials,
+        endpoints: PrimeApiEndpoints = PrimeApiEndpoints()
+    ) : this(OpenAIResponsesProvider(auth, endpoints))
+
+    constructor(authManager: OpenAIAuthManager) : this(
+        OpenAIResponsesProvider(
+            object : PrimeCredentials {
+                override fun isSignedIn() = authManager.isSignedIn()
+                override suspend fun accessToken() = authManager.accessToken()
+            }
+        )
+    )
 
     private data class ChatLine(val role: String, val content: String)
-    private data class ModelChoice(val slug: String, val displayName: String)
 
     companion object {
         private const val MAX_AGENT_STEPS = 16
         private const val MAX_UI_CHARS = 10_000
-        private const val USER_AGENT = "PRIME-P6/6.0.9"
-
-        @Volatile
-        private var sharedAvailableModels: List<ModelChoice>? = null
-
-        private val sharedModelMutex = Mutex()
     }
 
     private val chatHistory = mutableListOf<ChatLine>()
     private var phoneContext = false
-    private var availableModels: List<ModelChoice>? = null
-    private var fastModel: ModelChoice? = null
-    private var actionModel: ModelChoice? = null
+    private var fastModel: AiModel? = null
+    private var actionModel: AiModel? = null
 
     val engineLabel: String
         get() = (actionModel ?: fastModel)?.displayName ?: "ChatGPT plan"
 
     fun resetSession() {
-        availableModels = null
-        sharedAvailableModels = null
+        provider.reset()
         fastModel = null
         actionModel = null
         chatHistory.clear()
@@ -100,14 +80,14 @@ class PrimeAgent internal constructor(
     }
 
     suspend fun warmUp() {
-        if (auth.isSignedIn()) {
+        if (provider.isAvailable()) {
             ensureModel(preferFast = true)
         }
     }
 
     suspend fun testApiConnection(): String {
-        val models = loadAvailableModels(forceRefresh = true)
-        return "OpenAI API reachable • ${models.size} eligible model(s)"
+        val models = provider.listModels(forceRefresh = true)
+        return "${provider.providerId} reachable • ${models.size} eligible model(s)"
     }
 
     private val conversationInstructions = """
@@ -215,7 +195,7 @@ Never wrap JSON in markdown fences.
             return PrimeOutcome(reply)
         }
 
-        if (!auth.isSignedIn()) {
+        if (!provider.isAvailable()) {
             return PrimeOutcome("برای پاسخ هوشمند، اول حساب ChatGPT را از منوی PRIME وصل کن.")
         }
 
@@ -223,7 +203,7 @@ Never wrap JSON in markdown fences.
             val model = ensureModel(preferFast = true)
             onProgress("در حال فکر کردن…")
             val answer = requestTextResponse(
-                model = model.slug,
+                model = model.id,
                 instructions = conversationInstructions,
                 currentPrompt = userText,
                 onTextDelta = onTextDelta
@@ -370,7 +350,7 @@ Never wrap JSON in markdown fences.
         while (chatHistory.size > 10) chatHistory.removeAt(0)
     }
 
-    private suspend fun ensureModel(preferFast: Boolean): ModelChoice {
+    private suspend fun ensureModel(preferFast: Boolean): AiModel {
         if (preferFast) fastModel?.let { return it }
         else actionModel?.let { return it }
 
@@ -391,12 +371,12 @@ Never wrap JSON in markdown fences.
     }
 
     private fun chooseByMarkers(
-        models: List<ModelChoice>,
+        models: List<AiModel>,
         markers: List<String>
-    ): ModelChoice? {
+    ): AiModel? {
         for (marker in markers) {
             val match = models.firstOrNull {
-                it.slug.contains(marker, ignoreCase = true) ||
+                it.id.contains(marker, ignoreCase = true) ||
                     it.displayName.contains(marker, ignoreCase = true)
             }
             if (match != null) return match
@@ -406,111 +386,7 @@ Never wrap JSON in markdown fences.
 
     private suspend fun loadAvailableModels(
         forceRefresh: Boolean = false
-    ): List<ModelChoice> {
-        if (!forceRefresh) {
-            availableModels?.let { return it }
-
-            sharedAvailableModels?.let { shared ->
-                availableModels = shared
-                return shared
-            }
-        }
-
-        return sharedModelMutex.withLock {
-            if (!forceRefresh) {
-                availableModels?.let { return@withLock it }
-
-                sharedAvailableModels?.let { shared ->
-                    availableModels = shared
-                    return@withLock shared
-                }
-            }
-
-            val models = withNetworkRetry("models") {
-                val token = auth.accessToken()
-                coroutineContext.ensureActive()
-                val conn =
-                    URL(endpoints.models).openConnection() as HttpURLConnection
-                conn.requestMethod = "GET"
-                conn.connectTimeout = 8_000
-                conn.readTimeout = 15_000
-                conn.setRequestProperty(
-                    "Authorization",
-                    "Bearer $token"
-                )
-                conn.setRequestProperty(
-                    "Accept",
-                    "application/json"
-                )
-                conn.setRequestProperty(
-                    "User-Agent",
-                    USER_AGENT
-                )
-
-                try {
-                    val status = conn.responseCode
-                    val stream =
-                        if (status in 200..299) {
-                            conn.inputStream
-                        } else {
-                            conn.errorStream
-                        }
-
-                    val body = stream
-                        ?.bufferedReader()
-                        ?.use { it.readText() }
-                        .orEmpty()
-
-                    if (status !in 200..299) {
-                        throw apiError(status, body)
-                    }
-
-                    val array = JSONObject(body)
-                        .optJSONArray("models")
-                        ?: throw IllegalStateException(
-                            "No ChatGPT models are available for this account"
-                        )
-
-                    val visible = mutableListOf<ModelChoice>()
-                    for (i in 0 until array.length()) {
-                        val item =
-                            array.optJSONObject(i)
-                                ?: continue
-
-                        if (
-                            item.optString("visibility") != "list"
-                        ) {
-                            continue
-                        }
-
-                        val slug = item.optString("slug")
-                        if (slug.isBlank()) continue
-
-                        visible += ModelChoice(
-                            slug = slug,
-                            displayName =
-                                item.optString("display_name")
-                                    .ifBlank { slug }
-                        )
-                    }
-
-                    if (visible.isEmpty()) {
-                        throw IllegalStateException(
-                            "No visible ChatGPT model is available"
-                        )
-                    }
-
-                    visible
-                } finally {
-                    conn.disconnect()
-                }
-            }
-
-            availableModels = models
-            sharedAvailableModels = models
-            models
-        }
-    }
+    ): List<AiModel> = provider.listModels(forceRefresh)
 
     private suspend fun requestTextResponse(
         model: String,
@@ -519,164 +395,28 @@ Never wrap JSON in markdown fences.
         onTextDelta: ((String) -> Unit)? = null,
         phoneAction: Boolean = false
     ): String {
-        var emitted = false
-        return withNetworkRetry("responses") {
-            val token = auth.accessToken()
-            val requestContext = coroutineContext
-            requestContext.ensureActive()
-            val input = JSONArray()
-
-            chatHistory.takeLast(6).filterNot { line ->
-                phoneAction && line.role == "assistant" && PhoneReplyPolicy.isCapabilityDenial(line.content)
-            }.forEach { line ->
-                input.put(
-                    JSONObject()
-                        .put("role", line.role)
-                        .put("content", line.content)
-                )
-            }
-
-            input.put(
-                JSONObject()
-                    .put("role", "user")
-                    .put("content", currentPrompt)
-            )
-
-            val body = JSONObject()
-                .put("model", model)
-                .put("instructions", instructions)
-                .put("input", input)
-                .put("store", false)
-                .put("stream", true)
-
-            val conn = URL(endpoints.responses).openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.connectTimeout = 12_000
-            conn.readTimeout = 90_000
-            conn.setRequestProperty("Authorization", "Bearer $token")
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.setRequestProperty("Accept", "text/event-stream")
-            conn.setRequestProperty("User-Agent", USER_AGENT)
-
-            val bodyBytes = body.toString().toByteArray(Charsets.UTF_8)
-            conn.setFixedLengthStreamingMode(bodyBytes.size)
-            try {
-                conn.outputStream.use { it.write(bodyBytes) }
-                val status = conn.responseCode
-                if (status !in 200..299) {
-                    val errorBody =
-                        conn.errorStream?.bufferedReader()?.use { it.readText() }
-                            .orEmpty()
-                    throw apiError(status, errorBody)
+        val messages = buildList {
+            chatHistory.takeLast(6)
+                .filterNot { line ->
+                    phoneAction &&
+                        line.role == "assistant" &&
+                        PhoneReplyPolicy.isCapabilityDenial(line.content)
+                }
+                .forEach { line ->
+                    add(AiMessage(line.role, line.content))
                 }
 
-                conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    ResponsesStream.read(reader, onDelta = { delta ->
-                        if (onTextDelta != null) emitted = true
-                        onTextDelta?.invoke(delta)
-                    }, checkCancelled = { requestContext.ensureActive() })
-                }
-            } catch (e: IOException) {
-                // An already displayed/heard prefix must never be replayed on retry.
-                if (emitted) throw IllegalStateException("پاسخ هنگام دریافت قطع شد؛ دوباره تلاش کن.", e)
-                throw e
-            } finally {
-                conn.disconnect()
-            }
-        }
-    }
-
-    private suspend fun <T> withNetworkRetry(
-        operation: String,
-        block: suspend () -> T
-    ): T {
-        var last: Throwable? = null
-
-        repeat(3) { attempt ->
-            try {
-                return block()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                if (e is IllegalStateException || !isRetryableNetworkError(e)) throw e
-                last = e
-
-                if (attempt < 2) {
-                    delay(
-                        when (attempt) {
-                            0 -> 450L
-                            else -> 1_100L
-                        }
-                    )
-                }
-            }
+            add(AiMessage("user", currentPrompt))
         }
 
-        throw friendlyNetworkException(operation, last)
-    }
-
-    private fun isRetryableNetworkError(error: Throwable?): Boolean {
-        var current = error
-
-        while (current != null) {
-            if (
-                current is UnknownHostException ||
-                current is ConnectException ||
-                current is SocketTimeoutException ||
-                current is IOException
-            ) {
-                return true
-            }
-
-            val message = current.message.orEmpty()
-            if (
-                message.contains("Unable to resolve host", ignoreCase = true) ||
-                message.contains("unexpected end of stream", ignoreCase = true) ||
-                message.contains("stream ended", ignoreCase = true) ||
-                message.contains("connection reset", ignoreCase = true) ||
-                message.contains("broken pipe", ignoreCase = true)
-            ) {
-                return true
-            }
-
-            current = current.cause
-        }
-
-        return false
-    }
-
-    private fun friendlyNetworkException(
-        operation: String,
-        error: Throwable?
-    ): IllegalStateException {
-        var current = error
-        var dns = false
-
-        while (current != null) {
-            if (
-                current is UnknownHostException ||
-                current.message.orEmpty()
-                    .contains("Unable to resolve host", ignoreCase = true)
-            ) {
-                dns = true
-                break
-            }
-            current = current.cause
-        }
-
-        return if (dns) {
-            IllegalStateException(
-                "PRIME_API_DNS: PRIME cannot resolve api.openai.com after retries. " +
-                    "Check whether your VPN/proxy includes PRIME.",
-                error
-            )
-        } else {
-            IllegalStateException(
-                "PRIME_API_NETWORK: OpenAI $operation connection was interrupted after retries.",
-                error
-            )
-        }
+        return provider.streamText(
+            AiTextRequest(
+                model = model,
+                instructions = instructions,
+                messages = messages
+            ),
+            onTextDelta = onTextDelta
+        )
     }
 
     private fun parseDecision(raw: String): JSONObject {
@@ -691,28 +431,5 @@ Never wrap JSON in markdown fences.
         }
     }
 
-    private fun apiError(status: Int, body: String): Exception {
-        val message = try {
-            val json = JSONObject(body)
-            json.optString("detail").ifBlank {
-                json.optJSONObject("error")?.optString("message").orEmpty()
-            }
-        } catch (_: Exception) {
-            ""
-        }
 
-        val friendly = when {
-            message.isNotBlank() -> message
-            status == 401 ->
-                "ChatGPT connection expired. Connect the account again."
-            status == 403 ->
-                "ChatGPT plan access is not available for this request."
-            status == 429 ->
-                "ChatGPT usage limit reached. Try again later."
-            else ->
-                "ChatGPT request failed with HTTP $status"
-        }
-
-        return IllegalStateException(friendly)
-    }
 }
