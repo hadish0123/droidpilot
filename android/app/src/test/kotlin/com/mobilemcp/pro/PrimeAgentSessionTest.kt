@@ -238,4 +238,51 @@ class PrimeAgentSessionTest {
             fail("Expected cancellation")
         } catch (_: CancellationException) { }
     }
+    @Test fun providerBoundarySupportsNonOpenAiImplementations() = runBlocking {
+        val requests = mutableListOf<AiTextRequest>()
+        var resetCount = 0
+
+        val provider = object : AiProvider {
+            override val providerId = "fake-provider"
+            override fun isAvailable() = true
+            override suspend fun listModels(forceRefresh: Boolean) =
+                listOf(AiModel("fake_luna", "Fake Luna"))
+
+            override suspend fun streamText(
+                request: AiTextRequest,
+                onTextDelta: ((String) -> Unit)?
+            ): String {
+                requests += request
+                onTextDelta?.invoke("سلام")
+                return "سلام از provider آزمایشی"
+            }
+
+            override fun reset() {
+                resetCount += 1
+            }
+        }
+
+        val deltas = mutableListOf<String>()
+        val agent = PrimeAgent(provider)
+        val outcome = agent.run(
+            userText = "یک پاسخ کوتاه بده",
+            confirmedForTask = false,
+            uiProvider = { error("Normal chat must not read the phone UI") },
+            actionRunner = { _, _ -> error("Normal chat must not run phone actions") },
+            onProgress = {},
+            onTextDelta = { deltas += it }
+        )
+
+        assertEquals("سلام از provider آزمایشی", outcome.text)
+        assertEquals(listOf("سلام"), deltas)
+        assertEquals(1, requests.size)
+        assertEquals("fake_luna", requests.single().model)
+        assertEquals("user", requests.single().messages.last().role)
+        assertEquals("یک پاسخ کوتاه بده", requests.single().messages.last().content)
+
+        agent.resetSession()
+        assertEquals(1, resetCount)
+    }
+
+
 }

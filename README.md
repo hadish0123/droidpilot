@@ -155,23 +155,33 @@ The built-in PRIME chat/voice path does **not** require the MCP bridge.
 ## Architecture
 
 ```text
-                    ┌──────────────────────────┐
-                    │       PRIME P6 APK       │
-                    │                          │
-Voice ─ Speech STT ─┤  Chat / Agent loop       │
-Text ───────────────┤  ChatGPT-plan OAuth      │
-                    │          │               │
-                    │          ▼               │
-                    │  Android Action Engine   │
-                    │          │               │
-                    │  Accessibility Service   │
-                    └──────────┼───────────────┘
-                               ▼
-                  Telegram / Chrome / Settings / Apps
+                    ┌──────────────────────────────┐
+                    │         PRIME P6 APK         │
+                    │                              │
+Voice ─ Speech STT ─┤  Chat / Agent Orchestrator   │
+Text ───────────────┤            │                 │
+                    │            ▼                 │
+                    │      AI Provider boundary    │
+                    │            │                 │
+                    │            ▼                 │
+                    │   OpenAI Responses Provider  │
+                    │   + ChatGPT-plan OAuth       │
+                    │                              │
+                    │  Android Action Engine       │
+                    │            │                 │
+                    │  Accessibility Service       │
+                    └────────────┼─────────────────┘
+                                 ▼
+                    Telegram / Chrome / Settings / Apps
 
 Optional:
-External MCP client ↔ PRIME P6 MCP ↔ WebSocket ↔ Android Action Engine
+External MCP client ↔ PRIME P6 MCP ↔ authenticated WebSocket ↔ Android Action Engine
 ```
+
+`PrimeAgent` owns conversation and Android-action orchestration. Provider-specific
+authentication, model discovery, retries, HTTP transport and Responses SSE parsing
+live behind the `AiProvider` boundary so additional providers can be implemented
+without coupling them to the agent loop.
 
 ## Identity
 
