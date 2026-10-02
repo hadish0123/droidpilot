@@ -34,7 +34,7 @@ class ConversationContextManagerTest {
     fun tokenBudgetBoundsLargeConversations() {
         val manager = ConversationContextManager(
             maxMessages = 100,
-            maxEstimatedTokens = 100
+            maxEstimatedTokens = 256
         )
 
         repeat(20) { index ->
@@ -44,7 +44,7 @@ class ConversationContextManagerTest {
             )
         }
 
-        assertTrue(manager.estimatedTokens() <= 100)
+        assertTrue(manager.estimatedTokens() <= 256)
         assertTrue(manager.size() < 40)
     }
 
