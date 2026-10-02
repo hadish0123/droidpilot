@@ -53,6 +53,9 @@
     <string name="ui_remote_pairing_hint">کد ۶ رقمی اتصال</string>
     <string name="ui_remote_pair">وصل کردن PRIME به ChatGPT</string>
     <string name="ui_remote_stop">قطع اتصال راه دور</string>
+    <string name="ui_remote_mcp_url">آدرس خصوصی افزونه ChatGPT</string>
+    <string name="ui_remote_copy_mcp">کپی آدرس MCP</string>
+    <string name="ui_remote_mcp_copied">آدرس خصوصی MCP کپی شد</string>
     <string name="ui_remote_off">اتصال راه دور غیرفعال است</string>
     <string name="ui_remote_on">PRIME برای افزونه ChatGPT آنلاین است</string>
     <string name="ui_remote_pairing">در حال اتصال امن…</string>
