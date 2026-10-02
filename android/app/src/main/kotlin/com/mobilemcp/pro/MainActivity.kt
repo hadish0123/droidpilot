@@ -1196,10 +1196,28 @@ class MainActivity : AppCompatActivity() {
         binding.btnVoice.visibility = if (hasText) View.GONE else View.VISIBLE
     }
 
-    private fun appendChat(who: String, message: String) {
+    private fun appendChat(
+        who: String,
+        message: String,
+        persist: Boolean = true
+    ) {
         if (message.isBlank()) return
 
         val isUser = who == "شما"
+
+        if (
+            persist &&
+            currentChatId > 0L &&
+            chatStore.chatExists(currentChatId)
+        ) {
+            chatStore.appendMessage(
+                currentChatId,
+                if (isUser) "user" else "assistant",
+                message
+            )
+            renderedMessageCount += 1
+            if (isUser) renderChatHistory()
+        }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = if (isUser) Gravity.END else Gravity.START
