@@ -139,10 +139,25 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, GET, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "content-type, mcp-session-id",
+        "Access-Control-Expose-Headers": "Mcp-Session-Id",
+      });
+      res.end();
+      return;
+    }
+
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+
     const body = req.method === "POST" ? await readJson(req) : undefined;
     const mcp = createRemoteServer(hub, mcpIdentity);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
+      enableJsonResponse: true,
     });
 
     await mcp.connect(transport);
