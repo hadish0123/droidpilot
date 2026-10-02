@@ -152,6 +152,13 @@ class MainActivity : AppCompatActivity() {
         binding.btnOverlayPermission.setOnClickListener {
             openOverlayPermission()
         }
+        binding.btnVoiceSettings.setOnClickListener {
+            try {
+                startActivity(Intent(Settings.ACTION_TTS_SETTINGS))
+            } catch (_: Exception) {
+                startActivity(Intent(Settings.ACTION_SETTINGS))
+            }
+        }
         binding.btnAboutPrime.setOnClickListener {
             showAboutPrime()
         }
