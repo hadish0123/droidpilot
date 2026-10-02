@@ -740,6 +740,7 @@ class MainActivity : AppCompatActivity() {
 
         val streamBuffer = StringBuffer()
         var streamView: TextView? = null
+        var generationStopped = false
 
         val job = appScope.launch(start = CoroutineStart.LAZY) {
             try {
@@ -813,6 +814,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } catch (_: CancellationException) {
+                generationStopped = true
                 if (!isFinishing && !isDestroyed) {
                     if (fromVoiceMode) {
                         binding.tvVoiceStatus.text = getString(R.string.ui_generation_stopped)
@@ -855,7 +857,14 @@ class MainActivity : AppCompatActivity() {
                 }
             } finally {
                 activeGenerationJob = null
-                setBusy(false)
+                setBusy(
+                    false,
+                    if (generationStopped) {
+                        getString(R.string.ui_generation_stopped)
+                    } else {
+                        null
+                    }
+                )
             }
         }
 
