@@ -65,9 +65,9 @@ function consumePairingCode(code: string): boolean {
 
 function signToken(deviceId: string, purpose: "device" | "mcp"): string {
   const signature = createHmac("sha256", pairingSecret)
-    .update(`{purpose}:`{deviceId})
+    .update(`${purpose}:${deviceId}`)
     .digest("hex");
-  return `{deviceId}.`{signature};
+  return `${deviceId}.${signature}`;
 }
 
 function verifyToken(token: string, purpose: "device" | "mcp"): string | null {
@@ -80,7 +80,7 @@ function verifyToken(token: string, purpose: "device" | "mcp"): string | null {
   const supplied = Buffer.from(token.slice(dot + 1), "utf8");
   const expected = Buffer.from(
     createHmac("sha256", pairingSecret)
-      .update(`{purpose}:`{deviceId})
+      .update(`${purpose}:${deviceId}`)
       .digest("hex"),
     "utf8"
   );
@@ -131,7 +131,7 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, {
         credential,
         mcpUrl: publicBaseUrl
-          ? `{publicBaseUrl}/mcp/`{mcpToken}
+          ? `${publicBaseUrl}/mcp/${mcpToken}`
           : undefined,
       });
       return;
@@ -195,8 +195,8 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(port, "0.0.0.0", () => {
-  console.error(`PRIME P6 remote MCP listening on :`{port});
+  console.error(`PRIME P6 remote MCP listening on :${port}`);
   console.error(
-    `PRIME pairing code: `{initialPairingCode} (one-time, expires in 30 minutes)
+    `PRIME pairing code: ${initialPairingCode} (one-time, expires in 30 minutes)`
   );
 });
