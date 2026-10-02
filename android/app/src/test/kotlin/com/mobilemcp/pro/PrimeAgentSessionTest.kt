@@ -251,7 +251,7 @@ class PrimeAgentSessionTest {
             var executions = 0
             val outcome = turn(
                 agent,
-                "یک فرمان ناشناخته اجرا کن",
+                "داخل تلگرام روی دکمه ناشناخته بزن",
                 { _, _ ->
                     executions += 1
                     PrimeActionResult(true, "should not run")
