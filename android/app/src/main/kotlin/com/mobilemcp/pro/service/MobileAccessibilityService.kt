@@ -1,6 +1,7 @@
 package com.mobilemcp.pro.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
 import android.graphics.Bitmap
@@ -29,6 +30,17 @@ class MobileAccessibilityService : AccessibilityService() {
             private set
         @Volatile var isRunning = false
             private set
+
+        suspend fun awaitConnected(timeoutMs: Long = 1500L): MobileAccessibilityService? {
+            return withTimeoutOrNull(timeoutMs) {
+                var connected = instance
+                while (connected == null) {
+                    delay(100)
+                    connected = instance
+                }
+                connected
+            }
+        }
     }
 
     private val gson = Gson()
@@ -36,6 +48,12 @@ class MobileAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        serviceInfo = serviceInfo.apply {
+            flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+            packageNames = null
+        }
         instance = this
         isRunning = true
         Log.i(TAG, "Accessibility service connected")
@@ -51,8 +69,10 @@ class MobileAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        instance = null
-        isRunning = false
+        if (instance === this) {
+            instance = null
+            isRunning = false
+        }
         serviceScope.cancel()
         Log.i(TAG, "Accessibility service destroyed")
     }
@@ -73,7 +93,8 @@ class MobileAccessibilityService : AccessibilityService() {
             if (!window.isActive && !window.isFocused) continue
             if (window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD) continue
             val root = window.root ?: continue
-            if (root.packageName?.toString() != packageName) return root
+            val owner = root.packageName?.toString().orEmpty()
+            if (owner.isNotBlank() && owner != packageName) return root
             root.recycle()
         }
 
@@ -145,6 +166,11 @@ class MobileAccessibilityService : AccessibilityService() {
             Log.e(TAG, "Error handling command ${request.command}", e)
             CommandResponse.error(request.id, "Error: ${e.message}")
         }
+    }
+
+    @Synchronized fun currentTargetPackage(): String? {
+        val root = targetRootInActiveWindow() ?: return null
+        return try { root.packageName?.toString() } finally { root.recycle() }
     }
 
     // --- Gesture Commands ---
@@ -368,7 +394,11 @@ class MobileAccessibilityService : AccessibilityService() {
         root.recycle()
 
         val json = gson.toJsonTree(tree)
-        return CommandResponse.success(null, JsonObject().apply { add("tree", json) })
+        return CommandResponse.success(null, JsonObject().apply {
+            add("tree", json)
+            addProperty("screenWidth", resources.displayMetrics.widthPixels)
+            addProperty("screenHeight", resources.displayMetrics.heightPixels)
+        })
     }
 
     private fun executeFindElement(params: JsonObject?): CommandResponse {

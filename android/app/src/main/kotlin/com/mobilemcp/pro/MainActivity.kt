@@ -30,10 +30,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
-import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import com.mobilemcp.pro.databinding.ActivityMainBinding
-import com.mobilemcp.pro.model.CommandRequest
 import com.mobilemcp.pro.server.WebSocketCommandServer
 import com.mobilemcp.pro.service.ConnectionForegroundService
 import com.mobilemcp.pro.service.MobileAccessibilityService
@@ -720,7 +717,7 @@ class MainActivity : AppCompatActivity() {
                     primeAgent.run(
                         userText = task,
                         confirmedForTask = confirmed,
-                        uiProvider = { readUiState() },
+                        uiProvider = { readUiState(task) },
                         actionRunner = { command, params ->
                             executePrimeAction(command, params)
                         },
@@ -785,165 +782,12 @@ class MainActivity : AppCompatActivity() {
     private fun isPositiveConfirmation(value: String) = PersianInput.isPositiveConfirmation(value)
     private fun isNegativeConfirmation(value: String) = PersianInput.isNegativeConfirmation(value)
 
-    private suspend fun readUiState(): String = withContext(Dispatchers.Default) {
-        val service = MobileAccessibilityService.instance
-            ?: return@withContext "ACCESSIBILITY_OFF: PRIME cannot read or operate the current screen until Accessibility Service is enabled."
+    private val phoneController by lazy { PhoneController(this) }
 
-        val params = JsonObject().apply { addProperty("maxDepth", 12) }
-        val response = service.handleCommand(
-            CommandRequest("prime_ui", "get_ui_tree", params)
-        )
-        if (!response.success) {
-            "UI_ERROR: " + (response.error ?: "unknown")
-        } else {
-            response.data?.toString() ?: "{}"
-        }
-    }
+    private suspend fun readUiState(task: String = ""): String = phoneController.readUiState(task)
 
-    private suspend fun executePrimeAction(
-        command: String,
-        params: JSONObject
-    ): PrimeActionResult {
-        return when (command) {
-            "open_app" -> openApp(params)
-            "open_url" -> openUrl(params)
-            "get_ui_tree" -> {
-                val state = readUiState()
-                PrimeActionResult(
-                    !state.startsWith("UI_ERROR") &&
-                        !state.startsWith("ACCESSIBILITY_OFF"),
-                    state.take(2500)
-                )
-            }
-            else -> executeAccessibilityCommand(command, params)
-        }
-    }
-
-    private suspend fun executeAccessibilityCommand(
-        command: String,
-        params: JSONObject
-    ): PrimeActionResult = withContext(Dispatchers.Default) {
-        val allowed = setOf(
-            "click_element", "tap", "long_press", "set_text", "type_text",
-            "scroll", "swipe", "press_key", "wait_for_element", "get_focused"
-        )
-        if (command !in allowed) {
-            return@withContext PrimeActionResult(
-                false,
-                "Unsupported local action: $command"
-            )
-        }
-
-        val service = MobileAccessibilityService.instance
-            ?: return@withContext PrimeActionResult(
-                false,
-                "Accessibility Service is OFF. Ask the user to enable it in PRIME."
-            )
-
-        val gsonParams = try {
-            JsonParser.parseString(params.toString()).asJsonObject
-        } catch (_: Exception) {
-            JsonObject()
-        }
-
-        val response = service.handleCommand(
-            CommandRequest("prime_action", command, gsonParams)
-        )
-        if (response.success) {
-            PrimeActionResult(
-                true,
-                response.data?.toString()?.take(2500) ?: "OK"
-            )
-        } else {
-            PrimeActionResult(false, response.error ?: "Action failed")
-        }
-    }
-
-    private suspend fun openApp(
-        params: JSONObject
-    ): PrimeActionResult = withContext(Dispatchers.Main) {
-        val explicitPackage = params.optString("package").takeIf { it.isNotBlank() }
-        val requestedName = params.optString("name").takeIf { it.isNotBlank() }
-
-        val packageName = explicitPackage ?: requestedName?.let { resolveAppPackage(it) }
-        if (packageName.isNullOrBlank()) {
-            return@withContext PrimeActionResult(false, "App not found")
-        }
-
-        val intent = packageManager.getLaunchIntentForPackage(packageName)
-            ?: return@withContext PrimeActionResult(
-                false,
-                "App is not launchable: $packageName"
-            )
-
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        startActivity(intent)
-        PrimeActionResult(true, "Opened " + (requestedName ?: packageName))
-    }
-
-    private fun resolveAppPackage(name: String): String? {
-        val key = name.trim().lowercase(Locale.getDefault())
-        val aliases = mapOf(
-            "telegram" to "org.telegram.messenger",
-            "تلگرام" to "org.telegram.messenger",
-            "chrome" to "com.android.chrome",
-            "کروم" to "com.android.chrome",
-            "settings" to "com.android.settings",
-            "تنظیمات" to "com.android.settings",
-            "whatsapp" to "com.whatsapp",
-            "واتساپ" to "com.whatsapp",
-            "instagram" to "com.instagram.android",
-            "اینستاگرام" to "com.instagram.android",
-            "youtube" to "com.google.android.youtube",
-            "یوتیوب" to "com.google.android.youtube",
-            "gmail" to "com.google.android.gm",
-            "جیمیل" to "com.google.android.gm"
-        )
-
-        aliases[key]?.let { known ->
-            if (packageManager.getLaunchIntentForPackage(known) != null) return known
-        }
-
-        val launcherIntent = Intent(Intent.ACTION_MAIN)
-            .addCategory(Intent.CATEGORY_LAUNCHER)
-        val activities = packageManager.queryIntentActivities(launcherIntent, 0)
-
-        val exact = activities.firstOrNull {
-            it.loadLabel(packageManager)
-                .toString()
-                .trim()
-                .equals(name, ignoreCase = true)
-        }
-        if (exact != null) return exact.activityInfo.packageName
-
-        return activities.firstOrNull {
-            it.loadLabel(packageManager)
-                .toString()
-                .contains(name, ignoreCase = true)
-        }?.activityInfo?.packageName
-    }
-
-    private suspend fun openUrl(
-        params: JSONObject
-    ): PrimeActionResult = withContext(Dispatchers.Main) {
-        val raw = params.optString("url")
-        if (raw.isBlank()) return@withContext PrimeActionResult(false, "URL is missing")
-
-        val uri = Uri.parse(raw)
-        if (uri.scheme !in listOf("http", "https")) {
-            return@withContext PrimeActionResult(
-                false,
-                "Only http/https URLs are allowed"
-            )
-        }
-
-        try {
-            startActivity(Intent(Intent.ACTION_VIEW, uri))
-            PrimeActionResult(true, "Opened $raw")
-        } catch (e: Exception) {
-            PrimeActionResult(false, e.message ?: "Could not open URL")
-        }
-    }
+    private suspend fun executePrimeAction(command: String, params: JSONObject): PrimeActionResult =
+        phoneController.execute(command, params)
 
     private fun setupTextToSpeech() {
         voiceSpeech = PersianSpeech(applicationContext, object : PersianSpeech.Listener {

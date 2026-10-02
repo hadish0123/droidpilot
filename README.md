@@ -55,7 +55,7 @@ Official documentation:
 
 ## Voice
 
-PRIME 6.0.8 speaks Persian independently of Google/Samsung Text-to-Speech. On first opening Voice or testing speech in settings, it downloads the **fa_IR ganji medium** Piper voice pack (64 MiB), verifies its pinned SHA-256 and safely installs the model, tokens and eSpeak language data in app-private storage. Downloads show progress, can be cancelled and can be retried. Allow 260 MB free space during installation.
+PRIME 6.0.9 speaks Persian independently of Google/Samsung Text-to-Speech. On first opening Voice or testing speech in settings, it downloads the **fa_IR ganji medium** Piper voice pack (64 MiB), verifies its pinned SHA-256 and safely installs the model, tokens and eSpeak language data in app-private storage. Downloads show progress, can be cancelled and can be retried. Allow 260 MB free space during installation.
 
 After installation, synthesis and playback run on the phone without a speech API key or a TTS network request. ChatGPT responses still require internet and an eligible connected account. Android `SpeechRecognizer` provides speech input and may require internet. Its language defaults to **fa-IR**, independently of the phone language; settings can switch input to English and adjust speech speed.
 
@@ -85,6 +85,11 @@ The Android action engine is based on the original DroidPilot Accessibility arch
 - screenshot support for the optional bridge
 
 PRIME's internal agent loop refreshes the current UI state between actions and does not claim completion until the observed/action results support it.
+
+Version 6.0.9 routes simple launches such as «برو گوگل», «برو روبیکا» and arbitrary installed app names directly to Android on every turn. They do not depend on a model reply, network quota or earlier conversation failures. Text chat and Voice share one live app resolver and phone controller. Launch results are checked against the foreground app when Accessibility is available; an unverified launch is reported as a request rather than completed work.
+
+Compound requests and follow-ups use the phone planner with a compact, valid screen snapshot and relevant installed app names. Old generic capability disclaimers are excluded from action history. A new generic disclaimer gets one runtime correction; real disconnected permissions, missing apps, protected steps and observed action failures remain explicit.
+
 
 ## Build the Android app
 
@@ -119,6 +124,8 @@ Examples:
 
 ```text
 تلگرام رو باز کن
+برو گوگل
+حالا برو روبیکا
 برو داخل تلگرام و چت علی رو باز کن
 به علی بنویس «ساعت ۸ می‌رسم»
 کروم رو باز کن و برو speed.cloudflare.com

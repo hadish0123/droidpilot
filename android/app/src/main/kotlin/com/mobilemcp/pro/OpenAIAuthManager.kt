@@ -580,7 +580,7 @@ class OpenAIAuthManager(private val context: Context) {
         conn.connectTimeout = 15_000
         conn.readTimeout = 20_000
         conn.setRequestProperty("Accept", "application/json")
-        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.7")
+        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.9")
         return try {
             val status = conn.responseCode
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
@@ -630,7 +630,7 @@ class OpenAIAuthManager(private val context: Context) {
         conn.readTimeout = 30_000
         conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
         conn.setRequestProperty("Accept", "application/json")
-        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.7")
+        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.9")
         conn.outputStream.use {
             it.write(payload.toByteArray(Charsets.UTF_8))
         }
