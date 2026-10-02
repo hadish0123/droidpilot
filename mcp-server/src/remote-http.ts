@@ -39,9 +39,9 @@ const app = http.createServer(async (req, res) => {
 
   if (!entry && req.method === "POST") {
     const server = createServer();
-    const transport = new StreamableHTTPServerTransport({
+    let transport: StreamableHTTPServerTransport;\n    transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (id) => sessions.set(id, { server, transport }),
+      onsessioninitialized: (id): void => { sessions.set(id, { server, transport }); },
     });
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
