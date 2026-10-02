@@ -2,6 +2,8 @@ package com.mobilemcp.pro
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -20,6 +22,7 @@ import android.view.View
 import android.view.accessibility.AccessibilityManager
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import android.widget.SeekBar
 import android.view.inputmethod.EditorInfo
 import com.mobilemcp.pro.voice.PersianSpeech
@@ -59,6 +62,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var authManager: OpenAIAuthManager
     private lateinit var primeAgent: PrimeAgent
     private lateinit var chatStore: PrimeChatStore
+    private lateinit var bridgeSecurity: DeviceBridgeSecurity
+    private var bridgeAuthToken: String = ""
     private var currentChatId: Long = -1L
     private var renderedMessageCount: Int = 0
 
@@ -87,6 +92,8 @@ class MainActivity : AppCompatActivity() {
         authManager = OpenAIAuthManager(applicationContext)
         primeAgent = PrimeAgent(authManager)
         chatStore = PrimeChatStore(applicationContext)
+        bridgeSecurity = DeviceBridgeSecurity(SecureStore(applicationContext))
+        bridgeAuthToken = bridgeSecurity.getOrCreateToken()
 
         setupTextToSpeech()
         setupUI()
@@ -207,6 +214,21 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnToggleServer.setOnClickListener {
             if (isServerRunning) stopServer() else startServer()
+        }
+        binding.tvBridgeToken.text = bridgeAuthToken
+        binding.btnCopyBridgeToken.setOnClickListener {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(
+                ClipData.newPlainText(
+                    getString(R.string.ui_bridge_token_label),
+                    bridgeAuthToken
+                )
+            )
+            Toast.makeText(
+                this,
+                R.string.ui_bridge_token_copied,
+                Toast.LENGTH_SHORT
+            ).show()
         }
 
         binding.tvAppVersion.text = "P6 • PRIME " + appVersionName()
@@ -1309,6 +1331,7 @@ class MainActivity : AppCompatActivity() {
         try {
             wsServer = WebSocketCommandServer(
                 port = port,
+                authToken = bridgeAuthToken,
                 onLog = { message -> runOnUiThread { appendLog(message) } },
                 onConnectionChange = { count ->
                     runOnUiThread {

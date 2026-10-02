@@ -28,6 +28,7 @@ PRIME is designed local-first:
 - Access and refresh tokens are never written to source code or app logs.
 - Phone actions execute locally on the Android device.
 - The optional Device Bridge is off until the user starts it.
+- Device Bridge commands require a per-install 256-bit bearer token stored through Android Keystore.
 - The Accessibility Service is off until the user enables it.
 - PRIME does not need an OpenAI API key.
 
@@ -146,6 +147,8 @@ npm start
 ```
 
 The MCP server is named `prime-p6`. The Android app's bridge listens on port `8765` by default after the user explicitly starts it.
+
+The bridge now requires authentication for every connection. In PRIME, open the advanced Device Bridge section and copy the generated **Device Bridge token**. Pass that value as the `authToken` argument to the MCP `connect` tool. The token is generated with 256 bits of entropy, stored encrypted through Android Keystore, and is never written to application logs or source control.
 
 The built-in PRIME chat/voice path does **not** require the MCP bridge.
 

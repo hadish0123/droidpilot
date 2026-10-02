@@ -4,11 +4,16 @@ import { once } from 'node:events';
 import { WebSocketServer } from 'ws';
 import { AndroidClient } from '../dist/android-client.js';
 
+const TEST_TOKEN = 'prime-test-token-0123456789-abcdefghijklmnopqrstuvwxyz';
+
 async function device(t, handler) {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await once(server, 'listening');
-  server.on('connection', socket => socket.on('message', bytes => handler(socket, JSON.parse(bytes))));
-  const client = new AndroidClient('127.0.0.1', server.address().port);
+  server.on('connection', (socket, request) => {
+    assert.equal(request.headers.authorization, `Bearer ${TEST_TOKEN}`);
+    socket.on('message', bytes => handler(socket, JSON.parse(bytes)));
+  });
+  const client = new AndroidClient('127.0.0.1', server.address().port, TEST_TOKEN);
   t.after(async () => {
     client.disconnect();
     for (const socket of server.clients) socket.terminate();
@@ -57,8 +62,9 @@ test('refused connection rejects without requiring an error listener', async t =
   await assert.rejects(client.connect());
 });
 
-test('host validation and IPv6 formatting', () => {
-  assert.throws(() => new AndroidClient('example.com/path', 8765), /Invalid/);
-  assert.throws(() => new AndroidClient('localhost', 99999), /Invalid/);
-  assert.equal(new AndroidClient('::1', 8765).url, 'ws://[::1]:8765');
+test('host validation, authentication and IPv6 formatting', () => {
+  assert.throws(() => new AndroidClient('example.com/path', 8765, TEST_TOKEN), /Invalid/);
+  assert.throws(() => new AndroidClient('localhost', 99999, TEST_TOKEN), /Invalid/);
+  assert.throws(() => new AndroidClient('localhost', 8765, ''), /authentication token/);
+  assert.equal(new AndroidClient('::1', 8765, TEST_TOKEN).url, 'ws://[::1]:8765');
 });

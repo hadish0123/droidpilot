@@ -24,12 +24,19 @@ export class AndroidClient extends EventEmitter {
   }>();
   private requestCounter = 0;
   private _connected = false;
+  private readonly authToken: string;
 
-  constructor(private deviceHost: string, private devicePort: number, private authToken?: string) {
+  constructor(private deviceHost: string, private devicePort: number, authToken: string) {
     super();
     if (!/^[a-zA-Z0-9.:-]+$/.test(deviceHost) || !Number.isInteger(devicePort) || devicePort < 1 || devicePort > 65535) {
       throw new Error("Invalid Android device host or port");
     }
+
+    const normalizedToken = authToken.trim();
+    if (normalizedToken.length < 32) {
+      throw new Error("A valid PRIME Device Bridge authentication token is required");
+    }
+    this.authToken = normalizedToken;
   }
 
   get connected(): boolean { return this._connected; }
@@ -48,8 +55,9 @@ export class AndroidClient extends EventEmitter {
     if (this._connected) return Promise.resolve();
     if (this.connecting) return this.connecting;
     const operation = new Promise<void>((resolve, reject) => {
-      const headers: Record<string, string> = {};
-      if (this.authToken) headers.Authorization = `Bearer ${this.authToken}`;
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${this.authToken}`,
+      };
       const socket = new WebSocket(this.url, { headers });
       this.ws = socket;
       let opened = false;
