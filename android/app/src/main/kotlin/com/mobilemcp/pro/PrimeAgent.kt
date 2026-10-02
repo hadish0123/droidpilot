@@ -5,6 +5,7 @@ import com.mobilemcp.pro.ai.AiModel
 import com.mobilemcp.pro.ai.AiProvider
 import com.mobilemcp.pro.ai.AiTextRequest
 import com.mobilemcp.pro.ai.OpenAIResponsesProvider
+import com.mobilemcp.pro.tool.PrimeToolRegistry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
@@ -316,6 +317,12 @@ Never wrap JSON in markdown fences.
                     val command = decision.optString("command")
                     if (command.isBlank()) {
                         actionHistory += "Model returned an action without a command."
+                        return@repeat
+                    }
+
+                    val tool = PrimeToolRegistry.find(command)
+                    if (tool == null) {
+                        actionHistory += "Rejected unsupported tool command: $command"
                         return@repeat
                     }
 
