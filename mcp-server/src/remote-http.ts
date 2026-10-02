@@ -6,11 +6,10 @@ import { RemotePhoneHub } from "./remote-phone-hub.js";
 import { createRemoteServer } from "./remote-server.js";
 
 const port = Number(process.env.PORT || 3000);
-const mcpBearer = (process.env.PRIME_MCP_BEARER || "").trim();
 const pairingSecret = (process.env.PRIME_PAIRING_SECRET || "").trim();
+const configuredPairingCode = (process.env.PRIME_PAIRING_CODE || "").trim();
 const publicBaseUrl = (process.env.PRIME_PUBLIC_BASE_URL || "").replace(/\/$/, "");
 
-if (mcpBearer.length < 32) throw new Error("PRIME_MCP_BEARER must be at least 32 characters");
 if (pairingSecret.length < 32) throw new Error("PRIME_PAIRING_SECRET must be at least 32 characters");
 
 const hub = new RemotePhoneHub();
@@ -51,22 +50,30 @@ function createPairingCode() {
 }
 
 function consumePairingCode(code: string): boolean {
+  if (/^\d{6}$/.test(configuredPairingCode) && code === configuredPairingCode) {
+    return true;
+  }
   const expires = pairCodes.get(code);
   pairCodes.delete(code);
   return Boolean(expires && expires > Date.now());
 }
 
-function signDevice(deviceId: string): string {
-  const signature = createHmac("sha256", pairingSecret).update(deviceId).digest("hex");
+function signToken(deviceId: string, purpose: "device" | "mcp"): string {
+  const signature = createHmac("sha256", pairingSecret)
+    .update(`${purpose}:${deviceId}`)
+    .digest("hex");
   return `${deviceId}.${signature}`;
 }
 
-function verifyDeviceCredential(token: string): string | null {
+function verifyToken(token: string, purpose: "device" | "mcp"): string | null {
   const dot = token.lastIndexOf(".");
   if (dot < 1) return null;
   const deviceId = token.slice(0, dot);
   const supplied = Buffer.from(token.slice(dot + 1), "utf8");
-  const expected = Buffer.from(createHmac("sha256", pairingSecret).update(deviceId).digest("hex"), "utf8");
+  const expected = Buffer.from(
+    createHmac("sha256", pairingSecret).update(`${purpose}:${deviceId}`).digest("hex"),
+    "utf8"
+  );
   return supplied.length === expected.length && timingSafeEqual(supplied, expected) ? deviceId : null;
 }
 
@@ -92,19 +99,23 @@ const server = http.createServer(async (req, res) => {
         json(res, 401, { error: "Invalid or expired pairing code" });
         return;
       }
-      json(res, 200, { credential: signDevice(deviceId) });
+      const credential = signToken(deviceId, "device");
+      const mcpToken = signToken(deviceId, "mcp");
+      json(res, 200, {
+        credential,
+        mcpUrl: publicBaseUrl ? `${publicBaseUrl}/mcp/${mcpToken}` : undefined,
+      });
       return;
     }
 
-    if (url.pathname !== "/mcp") {
+    if (!url.pathname.startsWith("/mcp/")) {
       json(res, 404, { error: "Not found" });
       return;
     }
 
-    const auth = bearer(req);
-    const supplied = Buffer.from(auth, "utf8");
-    const expected = Buffer.from(mcpBearer, "utf8");
-    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    const mcpToken = decodeURIComponent(url.pathname.slice("/mcp/".length));
+    const mcpDeviceId = verifyToken(mcpToken, "mcp");
+    if (!mcpDeviceId) {
       json(res, 401, { error: "Unauthorized" });
       return;
     }
@@ -133,7 +144,7 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  const deviceId = verifyDeviceCredential(bearer(req));
+  const deviceId = verifyToken(bearer(req), "device");
   if (!deviceId) {
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
