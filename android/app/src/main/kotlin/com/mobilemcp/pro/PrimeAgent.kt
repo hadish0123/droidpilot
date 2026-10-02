@@ -7,6 +7,7 @@ import com.mobilemcp.pro.ai.AiTextRequest
 import com.mobilemcp.pro.ai.ModelPurpose
 import com.mobilemcp.pro.ai.ModelRegistry
 import com.mobilemcp.pro.ai.OpenAiResponsesProvider
+import com.mobilemcp.pro.context.ConversationContextManager
 import com.mobilemcp.pro.tools.ToolExecutionResult
 import com.mobilemcp.pro.tools.ToolInvocation
 import com.mobilemcp.pro.tools.ToolRegistry
@@ -53,8 +54,6 @@ class PrimeAgent internal constructor(
         override suspend fun accessToken() = authManager.accessToken()
     })
 
-    private data class ChatLine(val role: String, val content: String)
-
     companion object {
         private const val MAX_AGENT_STEPS = 16
         private const val MAX_UI_CHARS = 10_000
@@ -65,7 +64,7 @@ class PrimeAgent internal constructor(
         private val sharedModelMutex = Mutex()
     }
 
-    private val chatHistory = mutableListOf<ChatLine>()
+    private val contextManager = ConversationContextManager()
     private val modelRegistry = ModelRegistry()
     private val toolRegistry = ToolRegistry.default()
     private val toolRuntime = ToolRuntime(toolRegistry)
@@ -82,31 +81,24 @@ class PrimeAgent internal constructor(
         sharedAvailableModels = null
         fastModel = null
         actionModel = null
-        chatHistory.clear()
+        contextManager.clear()
         phoneContext = false
     }
 
     fun clearConversation() {
-        chatHistory.clear()
+        contextManager.clear()
         phoneContext = false
     }
 
     fun restoreConversation(lines: List<Pair<String, String>>) {
-        chatHistory.clear()
-        // Prune the model's text history without forgetting that this chat is
-        // a phone-control session. Voice restores its history on every turn.
+        // Preserve phone-control intent from the full persisted conversation,
+        // while Context Manager applies the bounded model-input budget.
         phoneContext = lines.any { (role, content) ->
-            role == "user" && content.isNotBlank() && PersianInput.isPhoneTask(content)
+            role == "user" &&
+                content.isNotBlank() &&
+                PersianInput.isPhoneTask(content)
         }
-        lines.takeLast(12).forEach { (role, content) ->
-            if (
-                (role == "user" || role == "assistant") &&
-                content.isNotBlank()
-            ) {
-                chatHistory += ChatLine(role, content)
-                if (role == "user" && PersianInput.isPhoneTask(content, phoneContext)) phoneContext = true
-            }
-        }
+        contextManager.restore(lines)
     }
 
     suspend fun warmUp() {
@@ -372,9 +364,7 @@ Never wrap JSON in markdown fences.
     catch (e: Exception) { PrimeActionResult(false, e.message ?: "اجرای فرمان گوشی انجام نشد.") }
 
     private fun remember(user: String, assistant: String) {
-        chatHistory += ChatLine("user", user)
-        chatHistory += ChatLine("assistant", assistant)
-        while (chatHistory.size > 10) chatHistory.removeAt(0)
+        contextManager.appendTurn(user, assistant)
     }
 
     private suspend fun ensureModel(preferFast: Boolean): AiModel {
@@ -429,7 +419,7 @@ Never wrap JSON in markdown fences.
     ): String {
         val messages = mutableListOf<AiMessage>()
 
-        chatHistory.takeLast(6).filterNot { line ->
+        contextManager.recent(6).filterNot { line ->
             phoneAction &&
                 line.role == "assistant" &&
                 PhoneReplyPolicy.isCapabilityDenial(line.content)
