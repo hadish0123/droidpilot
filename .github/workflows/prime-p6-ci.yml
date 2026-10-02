@@ -6,7 +6,6 @@ on:
       - master
       - rebuild/prime-p6
       - fix/prime-chat-ui-auth
-      - fix/prime-persian-voice-stability
   pull_request:
     branches:
       - master

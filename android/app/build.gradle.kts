@@ -1,3 +1,9 @@
+import java.io.File
+import java.net.URI
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -43,8 +49,8 @@ android {
 // release on every build; a failed download must never become a usable AAR.
 val sherpaAar = rootProject.file("voice-runtime/sherpa-onnx-1.13.8.aar")
 val sherpaSha256 = "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96"
-fun sha256(file: java.io.File): String {
-    val digest = java.security.MessageDigest.getInstance("SHA-256")
+fun sha256(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
     file.inputStream().use { input ->
         val buffer = ByteArray(65536)
         while (true) {
@@ -60,15 +66,15 @@ if (!sherpaAar.isFile || sha256(sherpaAar) != sherpaSha256) {
         throw GradleException("Run a build online once to download the verified PRIME voice runtime.")
     }
     sherpaAar.parentFile.mkdirs()
-    val partial = java.io.File(sherpaAar.parentFile, sherpaAar.name + ".part")
+    val partial = File(sherpaAar.parentFile, sherpaAar.name + ".part")
     logger.lifecycle("Downloading PRIME offline voice runtime (48 MB)…")
     try {
-        val conn = java.net.URI("https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar").toURL().openConnection()
+        val conn = URI("https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar").toURL().openConnection()
         conn.connectTimeout = 20000
         conn.readTimeout = 120000
         conn.getInputStream().use { input -> partial.outputStream().use { input.copyTo(it) } }
         check(sha256(partial) == sherpaSha256) { "PRIME voice runtime checksum mismatch" }
-        java.nio.file.Files.move(partial.toPath(), sherpaAar.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        Files.move(partial.toPath(), sherpaAar.toPath(), StandardCopyOption.REPLACE_EXISTING)
     } finally {
         partial.delete()
     }
