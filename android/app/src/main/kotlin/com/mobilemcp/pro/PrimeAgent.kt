@@ -5,6 +5,8 @@ import com.mobilemcp.pro.ai.AiModel
 import com.mobilemcp.pro.ai.AiProvider
 import com.mobilemcp.pro.ai.AiTextRequest
 import com.mobilemcp.pro.ai.OpenAIResponsesProvider
+import com.mobilemcp.pro.ai.ModelPurpose
+import com.mobilemcp.pro.ai.ModelSelector
 import com.mobilemcp.pro.context.ConversationContext
 import com.mobilemcp.pro.tool.LambdaToolRuntime
 import com.mobilemcp.pro.tool.PrimeToolRegistry
@@ -393,32 +395,13 @@ Never wrap JSON in markdown fences.
 
         val visible = loadAvailableModels()
 
-        val chosen = if (preferFast) {
-            chooseByMarkers(visible, listOf("luna", "mini", "instant"))
-                ?: chooseByMarkers(visible, listOf("sol"))
-                ?: visible.first()
-        } else {
-            chooseByMarkers(visible, listOf("sol"))
-                ?: chooseByMarkers(visible, listOf("pro"))
-                ?: visible.first()
-        }
+        val chosen = ModelSelector.select(
+            models = visible,
+            purpose = if (preferFast) ModelPurpose.FAST_CHAT else ModelPurpose.ACTIONS
+        )
 
         if (preferFast) fastModel = chosen else actionModel = chosen
         return chosen
-    }
-
-    private fun chooseByMarkers(
-        models: List<AiModel>,
-        markers: List<String>
-    ): AiModel? {
-        for (marker in markers) {
-            val match = models.firstOrNull {
-                it.id.contains(marker, ignoreCase = true) ||
-                    it.displayName.contains(marker, ignoreCase = true)
-            }
-            if (match != null) return match
-        }
-        return null
     }
 
     private suspend fun loadAvailableModels(
