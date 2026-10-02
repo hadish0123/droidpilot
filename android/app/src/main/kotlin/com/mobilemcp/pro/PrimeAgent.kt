@@ -224,7 +224,7 @@ Never wrap JSON in markdown fences.
         conn.readTimeout = 25_000
         conn.setRequestProperty("Authorization", "Bearer " + token)
         conn.setRequestProperty("Accept", "application/json")
-        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.0")
+        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.1")
 
         try {
             val status = conn.responseCode
@@ -245,10 +245,19 @@ Never wrap JSON in markdown fences.
             }
             if (visible.isEmpty()) throw IllegalStateException("No visible ChatGPT model is available")
 
-            val preferences = listOf("gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna")
-            val chosen = preferences.firstNotNullOfOrNull { wanted ->
-                visible.firstOrNull { it.first == wanted }
-            } ?: visible.first()
+            // Do not hard-code speculative model version names. PRIME P6 is the
+            // product identity; the inference engine is selected only from the
+            // models actually returned by the connected ChatGPT plan.
+            val chosen =
+                visible.firstOrNull {
+                    it.first.contains("sol", ignoreCase = true) ||
+                        it.second.contains("sol", ignoreCase = true)
+                }
+                    ?: visible.firstOrNull {
+                        it.first.contains("pro", ignoreCase = true) ||
+                            it.second.contains("pro", ignoreCase = true)
+                    }
+                    ?: visible.first()
 
             selectedModel = chosen.first
             selectedDisplayName = chosen.second
@@ -286,7 +295,7 @@ Never wrap JSON in markdown fences.
         conn.setRequestProperty("Authorization", "Bearer " + token)
         conn.setRequestProperty("Content-Type", "application/json")
         conn.setRequestProperty("Accept", "text/event-stream")
-        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.0")
+        conn.setRequestProperty("User-Agent", "PRIME-P6/6.0.1")
         conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
 
         try {
