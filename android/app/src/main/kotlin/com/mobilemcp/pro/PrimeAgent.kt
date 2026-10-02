@@ -1,6 +1,9 @@
 package com.mobilemcp.pro
 
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
@@ -32,7 +35,7 @@ class PrimeAgent(private val auth: OpenAIAuthManager) {
         private const val RESPONSES_URL = "https://api.openai.com/v1/responses"
         private const val MAX_AGENT_STEPS = 16
         private const val MAX_UI_CHARS = 10_000
-        private const val USER_AGENT = "PRIME-P6/6.0.7"
+        private const val USER_AGENT = "PRIME-P6/6.0.8"
 
         @Volatile
         private var sharedAvailableModels: List<ModelChoice>? = null
@@ -41,6 +44,7 @@ class PrimeAgent(private val auth: OpenAIAuthManager) {
     }
 
     private val chatHistory = mutableListOf<ChatLine>()
+    private var phoneContext = false
     private var availableModels: List<ModelChoice>? = null
     private var fastModel: ModelChoice? = null
     private var actionModel: ModelChoice? = null
@@ -54,20 +58,24 @@ class PrimeAgent(private val auth: OpenAIAuthManager) {
         fastModel = null
         actionModel = null
         chatHistory.clear()
+        phoneContext = false
     }
 
     fun clearConversation() {
         chatHistory.clear()
+        phoneContext = false
     }
 
     fun restoreConversation(lines: List<Pair<String, String>>) {
         chatHistory.clear()
+        phoneContext = false
         lines.takeLast(12).forEach { (role, content) ->
             if (
                 (role == "user" || role == "assistant") &&
                 content.isNotBlank()
             ) {
                 chatHistory += ChatLine(role, content)
+                if (role == "user" && PersianInput.isPhoneTask(content, phoneContext)) phoneContext = true
             }
         }
     }
@@ -149,15 +157,15 @@ Never wrap JSON in markdown fences.
         onProgress: (String) -> Unit,
         onTextDelta: ((String) -> Unit)? = null
     ): PrimeOutcome {
-        quickIdentityReply(userText)?.let { return PrimeOutcome(it) }
-
         if (!auth.isSignedIn()) {
             return PrimeOutcome(
                 "برای استفاده از هوش P6، اول «Continue with ChatGPT» را بزن و اکانت ChatGPT خودت را وصل کن."
             )
         }
 
-        quickOpenAppTarget(userText)?.let { appName ->
+        PersianInput.simpleAppTarget(userText)?.let { appName ->
+            coroutineContext.ensureActive()
+            phoneContext = true
             onProgress("Opening $appName")
             val result = actionRunner(
                 "open_app",
@@ -166,13 +174,13 @@ Never wrap JSON in markdown fences.
             val reply = if (result.success) {
                 "بازش کردم."
             } else {
-                "نتونستم $appName رو باز کنم."
+                "نتونستم $appName رو باز کنم: ${result.summary}"
             }
             remember(userText, reply)
             return PrimeOutcome(reply)
         }
 
-        if (!looksLikePhoneTask(userText)) {
+        if (!confirmedForTask && !PersianInput.isPhoneTask(userText, phoneContext)) {
             val model = ensureModel(preferFast = true)
             onProgress("Thinking")
             val answer = requestTextResponse(
@@ -186,14 +194,18 @@ Never wrap JSON in markdown fences.
             return PrimeOutcome(answer)
         }
 
+        phoneContext = true
         val model = ensureModel(preferFast = false)
         val actionHistory = mutableListOf<String>()
 
         repeat(MAX_AGENT_STEPS) { step ->
-            val shouldReadUi = step > 0 || needsUiAtStart(userText)
+            coroutineContext.ensureActive()
+            val shouldReadUi = true
             val uiState = if (shouldReadUi) {
                 try {
                     uiProvider().take(MAX_UI_CHARS)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     "UI_UNAVAILABLE: " + (e.message ?: "unknown")
                 }
@@ -233,7 +245,7 @@ Never wrap JSON in markdown fences.
             val decision = parseDecision(raw)
             when (decision.optString("type")) {
                 "reply" -> {
-                    val text = decision.optString("text").ifBlank { "انجام شد." }
+                    val text = decision.optString("text").ifBlank { "پاسخ معتبری دریافت نشد؛ وضعیت عملیات را بررسی کن." }
                     remember(userText, text)
                     return PrimeOutcome(text)
                 }
@@ -262,8 +274,11 @@ Never wrap JSON in markdown fences.
                     val note = decision.optString("note").ifBlank { command }
                     onProgress(note)
 
+                    coroutineContext.ensureActive()
                     val result = try {
                         actionRunner(command, params)
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         PrimeActionResult(false, e.message ?: "Action failed")
                     }
@@ -272,7 +287,10 @@ Never wrap JSON in markdown fences.
                         (if (result.success) "OK - " else "ERROR - ") +
                         result.summary
 
-                    if (result.success) delay(180)
+                    if (result.success) delay(350)
+                    else if (result.summary.contains("Accessibility", true) || result.summary.contains("ACCESSIBILITY_OFF")) {
+                        return PrimeOutcome("برای کنترل گوشی، دسترسی Accessibility را از تنظیمات PRIME فعال کن.")
+                    }
                 }
 
                 else -> {
@@ -286,116 +304,6 @@ Never wrap JSON in markdown fences.
             "به سقف مراحل این عملیات رسیدم. صفحه را بررسی کن و اگر خواستی دستور را ادامه بده."
         remember(userText, text)
         return PrimeOutcome(text)
-    }
-
-    private fun quickIdentityReply(text: String): String? {
-        val value = text.trim().lowercase()
-
-        val asksIdentity =
-            value.contains("کی هستی") ||
-                value.contains("تو کی") ||
-                value.contains("اسمت چیه") ||
-                value.contains("اسمت چیست") ||
-                value.contains("خودتو معرفی") ||
-                value.contains("خودت رو معرفی") ||
-                value.contains("who are you") ||
-                value == "your name"
-
-        val asksModel =
-            value.contains("چه مدلی") ||
-                value.contains("مدلت چیه") ||
-                value.contains("مدل تو") ||
-                value.contains("what model")
-
-        return when {
-            asksModel -> "من PRIME هستم، مدل P6."
-            asksIdentity -> "من PRIME هستم، مدل P6؛ دستیار هوشمند کنترل اندروید."
-            else -> null
-        }
-    }
-
-    private fun quickOpenAppTarget(text: String): String? {
-        val value = text.trim().lowercase()
-
-        val openIntent =
-            value.contains("باز کن") ||
-                value.contains("برو تو") ||
-                value.contains("برو داخل") ||
-                value.startsWith("open ") ||
-                value.startsWith("launch ")
-
-        if (!openIntent) return null
-
-        val complexTerms = listOf(
-            "پیام",
-            "بنویس",
-            "ارسال",
-            "بفرست",
-            "حذف",
-            "پاک",
-            "کلیک",
-            "بزن روی",
-            "جستجو",
-            "search",
-            "send ",
-            "type ",
-            "delete ",
-            "click "
-        )
-
-        if (complexTerms.any { value.contains(it) }) return null
-
-        val apps = listOf(
-            "تلگرام" to "Telegram",
-            "telegram" to "Telegram",
-            "کروم" to "Chrome",
-            "chrome" to "Chrome",
-            "واتساپ" to "WhatsApp",
-            "whatsapp" to "WhatsApp",
-            "اینستاگرام" to "Instagram",
-            "instagram" to "Instagram",
-            "یوتیوب" to "YouTube",
-            "youtube" to "YouTube",
-            "جیمیل" to "Gmail",
-            "gmail" to "Gmail",
-            "تنظیمات" to "Settings",
-            "settings" to "Settings"
-        )
-
-        return apps.firstOrNull { (needle, _) ->
-            value.contains(needle)
-        }?.second
-    }
-
-    private fun looksLikePhoneTask(text: String): Boolean {
-        val value = text.lowercase()
-
-        val actionTerms = listOf(
-            "باز کن", "برو ", "برو داخل", "برو تو", "برگرد", "بزن", "کلیک", "اسکرول",
-            "تایپ کن", "بنویس", "ارسال کن", "بفرست", "پیام بده", "حذف کن", "پاک کن",
-            "زنگ بزن", "تماس بگیر",
-            "تنظیم کن", "فعال کن", "خاموش کن", "روشن کن", "دانلود کن",
-            "نصب کن", "صفحه رو", "دکمه", "روی گوشی", "گوشیم",
-            "open ", "tap ", "click ", "scroll ", "type ", "send ",
-            "delete ", "launch ", "turn on", "turn off"
-        )
-
-        val deviceContext = listOf(
-            "وای فای", "wifi", "بلوتوث", "bluetooth", "باتری",
-            "نوتیفیکیشن", "notification", "تنظیمات گوشی", "settings"
-        )
-
-        return actionTerms.any { value.contains(it) } ||
-            deviceContext.any { value.contains(it) }
-    }
-
-    private fun needsUiAtStart(text: String): Boolean {
-        val value = text.lowercase()
-        return listOf(
-            "این صفحه", "همین صفحه", "این دکمه", "دکمه",
-            "روی صفحه", "داخل این برنامه", "اینجا",
-            "this screen", "this button", "current app"
-        ).any { value.contains(it) }
     }
 
     private fun remember(user: String, assistant: String) {
@@ -460,8 +368,9 @@ Never wrap JSON in markdown fences.
                 }
             }
 
-            val token = auth.accessToken()
             val models = withNetworkRetry("models") {
+                val token = auth.accessToken()
+                coroutineContext.ensureActive()
                 val conn =
                     URL(MODELS_URL).openConnection() as HttpURLConnection
                 conn.requestMethod = "GET"
@@ -551,9 +460,11 @@ Never wrap JSON in markdown fences.
         currentPrompt: String,
         onTextDelta: ((String) -> Unit)? = null
     ): String {
-        val token = auth.accessToken()
-
+        var emitted = false
         return withNetworkRetry("responses") {
+            val token = auth.accessToken()
+            val requestContext = coroutineContext
+            requestContext.ensureActive()
             val input = JSONArray()
 
             chatHistory.takeLast(6).forEach { line ->
@@ -589,11 +500,8 @@ Never wrap JSON in markdown fences.
 
             val bodyBytes = body.toString().toByteArray(Charsets.UTF_8)
             conn.setFixedLengthStreamingMode(bodyBytes.size)
-            conn.outputStream.use {
-                it.write(bodyBytes)
-            }
-
             try {
+                conn.outputStream.use { it.write(bodyBytes) }
                 val status = conn.responseCode
                 if (status !in 200..299) {
                     val errorBody =
@@ -602,66 +510,16 @@ Never wrap JSON in markdown fences.
                     throw apiError(status, errorBody)
                 }
 
-                val output = StringBuilder()
-                var completed = false
-
-                conn.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line ->
-                        if (!line.startsWith("data:")) return@forEach
-
-                        val payload = line.removePrefix("data:").trim()
-                        if (payload.isBlank() || payload == "[DONE]") {
-                            return@forEach
-                        }
-
-                        val event = try {
-                            JSONObject(payload)
-                        } catch (_: Exception) {
-                            return@forEach
-                        }
-
-                        when (event.optString("type")) {
-                            "response.output_text.delta" -> {
-                                val delta = event.optString("delta")
-                                output.append(delta)
-                                if (delta.isNotBlank()) {
-                                    onTextDelta?.invoke(delta)
-                                }
-                            }
-
-                            "response.completed" ->
-                                completed = true
-
-                            "response.failed" -> {
-                                val response = event.optJSONObject("response")
-                                val error = response?.optJSONObject("error")
-                                val code = error?.optString("code").orEmpty()
-                                val message = error?.optString("message").orEmpty()
-                                throw IllegalStateException(
-                                    if (message.isNotBlank()) message
-                                    else if (code.isNotBlank()) {
-                                        "ChatGPT request failed: $code"
-                                    } else {
-                                        "ChatGPT request failed"
-                                    }
-                                )
-                            }
-
-                            "response.incomplete" ->
-                                throw IOException(
-                                    "PRIME_STREAM_INCOMPLETE: ChatGPT stream ended incomplete"
-                                )
-                        }
-                    }
+                conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                    ResponsesStream.read(reader, onDelta = { delta ->
+                        if (onTextDelta != null) emitted = true
+                        onTextDelta?.invoke(delta)
+                    }, checkCancelled = { requestContext.ensureActive() })
                 }
-
-                if (!completed) {
-                    throw IOException(
-                        "PRIME_STREAM_INCOMPLETE: ChatGPT stream ended before completion"
-                    )
-                }
-
-                output.toString().trim()
+            } catch (e: IOException) {
+                // An already displayed/heard prefix must never be replayed on retry.
+                if (emitted) throw IllegalStateException("پاسخ هنگام دریافت قطع شد؛ دوباره تلاش کن.", e)
+                throw e
             } finally {
                 conn.disconnect()
             }
@@ -677,8 +535,10 @@ Never wrap JSON in markdown fences.
         repeat(3) { attempt ->
             try {
                 return block()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
-                if (!isRetryableNetworkError(e)) throw e
+                if (e is IllegalStateException || !isRetryableNetworkError(e)) throw e
                 last = e
 
                 if (attempt < 2) {
@@ -765,22 +625,8 @@ Never wrap JSON in markdown fences.
             .removeSuffix("```")
             .trim()
 
-        return try {
-            JSONObject(cleaned)
-        } catch (_: Exception) {
-            val start = cleaned.indexOf('{')
-            val end = cleaned.lastIndexOf('}')
-
-            if (start >= 0 && end > start) {
-                JSONObject(cleaned.substring(start, end + 1))
-            } else {
-                JSONObject()
-                    .put("type", "reply")
-                    .put(
-                        "text",
-                        cleaned.ifBlank { "پاسخی دریافت نشد." }
-                    )
-            }
+        return try { JSONObject(cleaned) } catch (_: Exception) {
+            JSONObject().put("type", "invalid")
         }
     }
 

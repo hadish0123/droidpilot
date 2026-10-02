@@ -11,8 +11,8 @@ android {
         applicationId = "com.mobilemcp.pro"
         minSdk = 30
         targetSdk = 34
-        versionCode = 60007
-        versionName = "6.0.7"
+        versionCode = 60008
+        versionName = "6.0.8"
     }
 
     buildTypes {
@@ -39,7 +39,46 @@ android {
     }
 }
 
+// Official prebuilt JNI runtime. Keep binaries out of git and verify the exact
+// release on every build; a failed download must never become a usable AAR.
+val sherpaAar = rootProject.file("voice-runtime/sherpa-onnx-1.13.8.aar")
+val sherpaSha256 = "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96"
+fun sha256(file: java.io.File): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+        val buffer = ByteArray(65536)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
+}
+if (!sherpaAar.isFile || sha256(sherpaAar) != sherpaSha256) {
+    if (gradle.startParameter.isOffline) {
+        throw GradleException("Run a build online once to download the verified PRIME voice runtime.")
+    }
+    sherpaAar.parentFile.mkdirs()
+    val partial = java.io.File(sherpaAar.parentFile, sherpaAar.name + ".part")
+    logger.lifecycle("Downloading PRIME offline voice runtime (48 MB)…")
+    try {
+        val conn = java.net.URI("https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar").toURL().openConnection()
+        conn.connectTimeout = 20000
+        conn.readTimeout = 120000
+        conn.getInputStream().use { input -> partial.outputStream().use { input.copyTo(it) } }
+        check(sha256(partial) == sherpaSha256) { "PRIME voice runtime checksum mismatch" }
+        java.nio.file.Files.move(partial.toPath(), sherpaAar.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+    } finally {
+        partial.delete()
+    }
+}
+
 dependencies {
+    implementation(files(sherpaAar))
+    implementation("org.apache.commons:commons-compress:1.27.1")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")

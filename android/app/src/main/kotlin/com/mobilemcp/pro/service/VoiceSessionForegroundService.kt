@@ -21,14 +21,13 @@ import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.TextView
@@ -43,6 +42,10 @@ import com.mobilemcp.pro.PrimeActionResult
 import com.mobilemcp.pro.PrimeChatStore
 import com.mobilemcp.pro.PrimeAgent
 import com.mobilemcp.pro.R
+import com.mobilemcp.pro.voice.PersianSpeech
+import com.mobilemcp.pro.voice.SpeechText
+import com.mobilemcp.pro.voice.VoicePreferences
+import com.mobilemcp.pro.PersianInput
 import com.mobilemcp.pro.model.CommandRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +53,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.Locale
@@ -104,14 +110,15 @@ class VoiceSessionForegroundService : Service() {
     private var btnSend: ImageButton? = null
 
     private var speechRecognizer: SpeechRecognizer? = null
-    private var textToSpeech: TextToSpeech? = null
+    private var voiceSpeech: PersianSpeech? = null
     private var ttsReady = false
     private var ttsSpeaking = false
-    private var ttsFallbackAttempted = false
-    private var ttsPreferredEngineUsed: String? = null
     private val speechQueue = ArrayDeque<String>()
-    private val streamSpeechBuffer = StringBuilder()
-    private var streamedSpeechStarted = false
+    private val replyBuffer = StringBuilder()
+    private var tvReply: TextView? = null
+    private var agentJob: Job? = null
+    private var listening = false
+    private var minimized = false
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
 
@@ -158,6 +165,7 @@ class VoiceSessionForegroundService : Service() {
             return START_NOT_STICKY
         }
 
+        if (sessionActive) return START_NOT_STICKY
         lastStartError = null
 
         try {
@@ -227,13 +235,12 @@ class VoiceSessionForegroundService : Service() {
                     !overlayFocusable
                 ) {
                     updateStatus(
-                        "Voice input ready • TTS still initializing"
+                        "آماده‌سازی صدای فارسی…"
                     )
-                    startListening()
                 }
             }
 
-            return START_STICKY
+            return START_NOT_STICKY
         } catch (t: Throwable) {
             handleStartFailure(t)
             return START_NOT_STICKY
@@ -322,6 +329,16 @@ class VoiceSessionForegroundService : Service() {
 
         tvStatus = view.findViewById(R.id.tvOverlayVoiceStatus)
         tvContext = view.findViewById(R.id.tvOverlayContext)
+        tvReply = view.findViewById(R.id.tvOverlayReply)
+        view.findViewById<TextView>(R.id.btnOverlayMinimize).setOnClickListener {
+            minimized = !minimized
+            view.findViewById<View>(R.id.voiceOverlayBody).visibility = if (minimized) View.GONE else View.VISIBLE
+            overlayParams?.let { params ->
+                params.height = if (minimized) WindowManager.LayoutParams.WRAP_CONTENT else WindowManager.LayoutParams.MATCH_PARENT
+                params.gravity = if (minimized) Gravity.BOTTOM else Gravity.TOP
+                windowManager.updateViewLayout(view, params)
+            }
+        }
         editMessage = view.findViewById(R.id.etOverlayVoiceMessage)
         btnMic = view.findViewById(R.id.btnOverlayMic)
         btnSend = view.findViewById(R.id.btnOverlaySend)
@@ -332,7 +349,11 @@ class VoiceSessionForegroundService : Service() {
             }
 
         btnMic?.setOnClickListener {
-            textToSpeech?.stop()
+            voiceSpeech?.stop()
+            ttsSpeaking = false
+            speechQueue.clear()
+            abandonSpeechAudioFocus()
+            listening = false
             speechRecognizer?.cancel()
             setOverlayFocusable(false)
             startListening()
@@ -342,9 +363,8 @@ class VoiceSessionForegroundService : Service() {
             sendTypedCommand()
         }
 
-        editMessage?.setOnEditorActionListener { _, _, _ ->
-            sendTypedCommand()
-            true
+        editMessage?.setOnEditorActionListener { _, action, _ ->
+            if (action == EditorInfo.IME_ACTION_SEND) { sendTypedCommand(); true } else false
         }
 
         editMessage?.setOnTouchListener { _, event ->
@@ -447,6 +467,7 @@ class VoiceSessionForegroundService : Service() {
     }
 
     private fun pauseListeningForTyping() {
+        listening = false
         speechRecognizer?.cancel()
         updateStatus("Type your next command…")
     }
@@ -463,214 +484,22 @@ class VoiceSessionForegroundService : Service() {
         }
     }
 
-    private fun setupTextToSpeech(
-        forceDefaultEngine: Boolean = false
-    ) {
-        try {
-            val listener = TextToSpeech.OnInitListener { status ->
-                scope.launch {
-                    onTtsInitialized(status)
-                }
+    private fun setupTextToSpeech() {
+        voiceSpeech = PersianSpeech(applicationContext, object : PersianSpeech.Listener {
+            override fun onReady() {
+                ttsReady = true
+                updateStatus("صدای فارسی آماده است")
+                pumpSpeechQueue()
             }
-
-            val preferredEngine =
-                if (forceDefaultEngine) null
-                else preferredTtsEnginePackage()
-
-            textToSpeech = if (preferredEngine != null) {
-                TextToSpeech(
-                    applicationContext,
-                    listener,
-                    preferredEngine
-                )
-            } else {
-                TextToSpeech(applicationContext, listener)
+            override fun onStart() { updateStatus("پرایم در حال صحبت است…") }
+            override fun onDone() {
+                ttsSpeaking = false
+                pumpSpeechQueue()
             }
-        } catch (t: Throwable) {
-            ttsReady = false
-            textToSpeech = null
-            lastStartError =
-                "TextToSpeech: " +
-                    (t.message ?: t::class.java.simpleName)
-            updateStatus("Voice output unavailable • speech input still works")
-            scope.launch {
-                delay(250)
-                startListening()
+            override fun onError(message: String) {
+                onSpeechError(message)
             }
-        }
-    }
-
-    private fun preferredTtsEnginePackage(): String? {
-        val candidates = listOf(
-            "com.google.android.tts",
-            "com.samsung.SMT"
-        )
-
-        return candidates.firstOrNull { packageName ->
-            try {
-                packageManager.getPackageInfo(packageName, 0)
-                true
-            } catch (_: Throwable) {
-                false
-            }
-        }
-    }
-
-    private fun onTtsInitialized(status: Int) {
-        val tts = textToSpeech
-
-        if (status != TextToSpeech.SUCCESS || tts == null) {
-            ttsReady = false
-
-            if (!ttsFallbackAttempted) {
-                ttsFallbackAttempted = true
-                try {
-                    textToSpeech?.shutdown()
-                } catch (_: Throwable) {
-                }
-                textToSpeech = null
-                setupTextToSpeech(forceDefaultEngine = true)
-                return
-            }
-
-            updateStatus("Voice output unavailable • check Text-to-Speech")
-            if (sessionActive && !isBusy) {
-                scope.launch {
-                    delay(300)
-                    startListening()
-                }
-            }
-            return
-        }
-
-        try {
-            tts.setSpeechRate(1.04f)
-            tts.setPitch(1.0f)
-            tts.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-
-            tts.setOnUtteranceProgressListener(
-                object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {
-                        scope.launch {
-                            ttsSpeaking = true
-                            updateStatus("PRIME is speaking…")
-                        }
-                    }
-
-                    override fun onDone(utteranceId: String?) {
-                        scope.launch {
-                            ttsSpeaking = false
-                            pumpSpeechQueue()
-                        }
-                    }
-
-                    override fun onError(utteranceId: String?) {
-                        scope.launch {
-                            onSpeechError("TTS engine error")
-                        }
-                    }
-
-                    override fun onError(
-                        utteranceId: String?,
-                        errorCode: Int
-                    ) {
-                        scope.launch {
-                            onSpeechError("TTS error $errorCode")
-                        }
-                    }
-
-                    override fun onStop(
-                        utteranceId: String?,
-                        interrupted: Boolean
-                    ) {
-                        scope.launch {
-                            ttsSpeaking = false
-                            if (!interrupted) {
-                                pumpSpeechQueue()
-                            }
-                        }
-                    }
-                }
-            )
-
-            ttsReady = true
-            updateStatus("PRIME voice ready")
-            pumpSpeechQueue()
-        } catch (t: Throwable) {
-            ttsReady = false
-            lastStartError =
-                "TextToSpeech init: " +
-                    (t.message ?: t::class.java.simpleName)
-            updateStatus("Voice output unavailable • check Text-to-Speech")
-            if (sessionActive && !isBusy) {
-                scope.launch {
-                    delay(300)
-                    startListening()
-                }
-            }
-        }
-    }
-
-    private fun configureTtsForText(
-        tts: TextToSpeech,
-        text: String
-    ) {
-        val targetLocale = if (
-            text.any { it.code in 0x0600..0x06FF }
-        ) {
-            Locale("fa", "IR")
-        } else {
-            Locale.getDefault()
-        }
-
-        val matchingVoice = try {
-            tts.voices
-                ?.filter {
-                    it.locale.language.equals(
-                        targetLocale.language,
-                        ignoreCase = true
-                    )
-                }
-                ?.sortedWith(
-                    compareBy<android.speech.tts.Voice> {
-                        it.isNetworkConnectionRequired
-                    }.thenByDescending {
-                        it.quality
-                    }
-                )
-                ?.firstOrNull()
-        } catch (_: Throwable) {
-            null
-        }
-
-        if (matchingVoice != null) {
-            try {
-                tts.voice = matchingVoice
-                return
-            } catch (_: Throwable) {
-            }
-        }
-
-        val languageResult = try {
-            tts.setLanguage(targetLocale)
-        } catch (_: Throwable) {
-            TextToSpeech.LANG_NOT_SUPPORTED
-        }
-
-        if (
-            languageResult == TextToSpeech.LANG_MISSING_DATA ||
-            languageResult == TextToSpeech.LANG_NOT_SUPPORTED
-        ) {
-            try {
-                tts.setLanguage(Locale.getDefault())
-            } catch (_: Throwable) {
-            }
-        }
+        }).also { it.prepare() }
     }
 
     private fun requestSpeechAudioFocus() {
@@ -684,7 +513,18 @@ class VoiceSessionForegroundService : Service() {
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
-                .setOnAudioFocusChangeListener { }
+                .setOnAudioFocusChangeListener { change ->
+                    if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+                        scope.launch {
+                            voiceSpeech?.stop()
+                            ttsSpeaking = false
+                            speechQueue.clear()
+                            listening = false
+                            speechRecognizer?.cancel()
+                            updateStatus("صدا متوقف شد · برای ادامه میکروفن را بزن")
+                        }
+                    }
+                }
                 .build()
 
             audioFocusRequest = request
@@ -715,18 +555,19 @@ class VoiceSessionForegroundService : Service() {
             return
         }
 
+        listening = false
         speechRecognizer?.cancel()
 
         if (flush) {
             try {
-                textToSpeech?.stop()
+                voiceSpeech?.stop()
             } catch (_: Throwable) {
             }
             ttsSpeaking = false
             speechQueue.clear()
         }
 
-        speechQueue.addLast(clean.take(2500))
+        speechQueue.addAll(SpeechText.chunks(clean))
 
         if (!ttsReady) {
             updateStatus("Preparing PRIME voice…")
@@ -750,7 +591,7 @@ class VoiceSessionForegroundService : Service() {
             return
         }
 
-        val tts = textToSpeech
+        val tts = voiceSpeech
         if (tts == null) {
             ttsReady = false
             updateStatus("Voice output unavailable")
@@ -759,63 +600,25 @@ class VoiceSessionForegroundService : Service() {
         }
 
         val next = speechQueue.removeFirst()
-        configureTtsForText(tts, next)
-
         if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) == 0) {
-            updateStatus("Media volume is muted")
+            updateStatus("صدای رسانهٔ گوشی بسته است")
         }
-
         requestSpeechAudioFocus()
-
-        val params = Bundle().apply {
-            putFloat(
-                TextToSpeech.Engine.KEY_PARAM_VOLUME,
-                1.0f
-            )
-            putInt(
-                TextToSpeech.Engine.KEY_PARAM_STREAM,
-                AudioManager.STREAM_MUSIC
-            )
-        }
-
-        val utteranceId =
-            "prime-voice-" + System.currentTimeMillis()
-
-        val resultCode = try {
-            tts.speak(
-                next,
-                TextToSpeech.QUEUE_FLUSH,
-                params,
-                utteranceId
-            )
-        } catch (t: Throwable) {
-            lastStartError =
-                "TTS speak: " +
-                    (t.message ?: t::class.java.simpleName)
-            TextToSpeech.ERROR
-        }
-
-        if (resultCode == TextToSpeech.ERROR) {
-            scope.launch {
-                onSpeechError("TTS speak returned ERROR")
-            }
-        } else {
-            // Some vendor engines call onStart late. Mark the queue busy now
-            // so a second chunk cannot flush the first one before playback.
-            ttsSpeaking = true
-        }
+        ttsSpeaking = true
+        tts.speak(next)
     }
 
     private fun onSpeechError(reason: String) {
         ttsSpeaking = false
         lastStartError = reason
+        speechQueue.clear()
         abandonSpeechAudioFocus()
 
         if (speechQueue.isNotEmpty()) {
             pumpSpeechQueue()
         } else {
             updateStatus(
-                "Voice output failed • check media volume / TTS settings"
+                "پخش صدا ناموفق بود · $reason"
             )
             if (sessionActive && !isBusy && !overlayFocusable) {
                 scope.launch {
@@ -830,77 +633,17 @@ class VoiceSessionForegroundService : Service() {
         enqueueSpeech(text, flush = false)
     }
 
-    private fun resetStreamSpeech() {
-        streamSpeechBuffer.setLength(0)
-        streamedSpeechStarted = false
-    }
+    private fun resetStreamSpeech() { replyBuffer.setLength(0) }
 
     private fun acceptStreamSpeechDelta(delta: String) {
-        if (delta.isBlank()) return
-
-        streamSpeechBuffer.append(delta)
-
-        while (true) {
-            val value = streamSpeechBuffer.toString()
-            if (value.isBlank()) return
-
-            var boundary = -1
-            for (index in value.indices) {
-                val ch = value[index]
-                if (
-                    index >= 24 &&
-                    (
-                        ch == '.' ||
-                        ch == '!' ||
-                        ch == '?' ||
-                        ch == '؟' ||
-                        ch == '\n'
-                    )
-                ) {
-                    boundary = index + 1
-                    break
-                }
-            }
-
-            if (boundary < 0 && value.length >= 110) {
-                val preferred = value.lastIndexOf(
-                    ' ',
-                    startIndex = 90
-                )
-                boundary = if (preferred >= 45) {
-                    preferred + 1
-                } else {
-                    90
-                }
-            }
-
-            if (boundary <= 0) return
-
-            val chunk = value.substring(0, boundary).trim()
-            streamSpeechBuffer.delete(0, boundary)
-
-            if (chunk.isNotBlank()) {
-                streamedSpeechStarted = true
-                enqueueSpeech(chunk)
-            }
-        }
+        replyBuffer.append(delta)
+        tvReply?.text = replyBuffer.toString()
     }
 
     private fun finishStreamSpeech(fullReply: String) {
-        val remaining = streamSpeechBuffer
-            .toString()
-            .trim()
-        streamSpeechBuffer.setLength(0)
-
-        if (streamedSpeechStarted) {
-            if (remaining.isNotBlank()) {
-                enqueueSpeech(remaining)
-            } else {
-                pumpSpeechQueue()
-            }
-        } else {
-            enqueueSpeech(fullReply)
-        }
+        tvReply?.text = fullReply
+        replyBuffer.setLength(0)
+        enqueueSpeech(fullReply)
     }
 
     private fun ensureSpeechRecognizer(): Boolean {
@@ -943,7 +686,8 @@ class VoiceSessionForegroundService : Service() {
                         }
 
                         override fun onError(error: Int) {
-                            if (!sessionActive || isBusy || overlayFocusable) return
+                            listening = false
+                            if (!sessionActive || isBusy || overlayFocusable || ttsSpeaking || speechQueue.isNotEmpty()) return
 
                             when (error) {
                                 SpeechRecognizer.ERROR_NO_MATCH,
@@ -968,6 +712,8 @@ class VoiceSessionForegroundService : Service() {
                         }
 
                         override fun onResults(results: Bundle?) {
+                            listening = false
+                            if (!sessionActive || isBusy || overlayFocusable || ttsSpeaking) return
                             val spoken = results
                                 ?.getStringArrayList(
                                     SpeechRecognizer.RESULTS_RECOGNITION
@@ -1015,7 +761,10 @@ class VoiceSessionForegroundService : Service() {
             !sessionActive ||
             isBusy ||
             overlayFocusable ||
-            textToSpeech?.isSpeaking == true
+            ttsSpeaking ||
+            speechQueue.isNotEmpty() ||
+            listening ||
+            voiceSpeech?.isSpeaking == true
         ) {
             return
         }
@@ -1023,6 +772,7 @@ class VoiceSessionForegroundService : Service() {
         if (!ensureSpeechRecognizer()) return
 
         try {
+            listening = false
             speechRecognizer?.cancel()
         } catch (_: Exception) {
             // Reset best effort.
@@ -1037,15 +787,17 @@ class VoiceSessionForegroundService : Service() {
             )
             putExtra(
                 RecognizerIntent.EXTRA_LANGUAGE,
-                Locale.getDefault().toLanguageTag()
+                VoicePreferences.language(this@VoiceSessionForegroundService)
             )
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         }
 
         try {
+            listening = true
             speechRecognizer?.startListening(intent)
         } catch (t: Throwable) {
+            listening = false
             lastStartError =
                 "Speech start: " +
                     (t.message ?: t::class.java.simpleName)
@@ -1054,19 +806,21 @@ class VoiceSessionForegroundService : Service() {
     }
 
     private fun handleInput(input: String) {
-        if (input.isBlank() || isBusy) return
+        if (input.isBlank() || isBusy || !sessionActive) return
 
         ensureActiveChat()
+        restoreActiveChatContext()
         chatStore.appendMessage(activeChatId, "user", input)
+        tvReply?.text = "شما: $input"
 
         setOverlayFocusable(false)
+        listening = false
         speechRecognizer?.cancel()
 
-        // A new user turn owns the audio channel. Drop stale speech from the
-        // previous turn, then let fresh response deltas start speaking as soon
-        // as the first natural phrase arrives.
+        // A new user turn owns the audio channel. Only completed Responses
+        // output is spoken; partial/error responses stay visible as text.
         try {
-            textToSpeech?.stop()
+            voiceSpeech?.stop()
         } catch (_: Throwable) {
         }
         ttsSpeaking = false
@@ -1104,7 +858,7 @@ class VoiceSessionForegroundService : Service() {
         setControlsEnabled(false)
         updateStatus("Thinking…")
 
-        scope.launch {
+        agentJob = scope.launch {
             try {
                 val outcome = withContext(Dispatchers.IO) {
                     primeAgent.run(
@@ -1140,13 +894,18 @@ class VoiceSessionForegroundService : Service() {
                 isBusy = false
                 setControlsEnabled(true)
                 finishStreamSpeech(outcome.text)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 isBusy = false
                 setControlsEnabled(true)
 
                 val message = userFriendlyError(e)
-                streamSpeechBuffer.setLength(0)
-                streamedSpeechStarted = false
+                resetStreamSpeech()
+                voiceSpeech?.stop()
+                ttsSpeaking = false
+                speechQueue.clear()
+                tvReply?.text = message
                 updateStatus("Connection issue")
                 enqueueSpeech(message, flush = false)
             }
@@ -1458,44 +1217,8 @@ class VoiceSessionForegroundService : Service() {
         }
     }
 
-    private fun isPositiveConfirmation(value: String): Boolean {
-        val normalized = value
-            .trim()
-            .lowercase(Locale.getDefault())
-
-        return normalized in setOf(
-            "بله",
-            "آره",
-            "اره",
-            "اوکی",
-            "باشه",
-            "تایید",
-            "تأیید",
-            "انجام بده",
-            "ارسال کن",
-            "yes",
-            "ok",
-            "okay",
-            "confirm",
-            "do it"
-        )
-    }
-
-    private fun isNegativeConfirmation(value: String): Boolean {
-        val normalized = value
-            .trim()
-            .lowercase(Locale.getDefault())
-
-        return normalized in setOf(
-            "نه",
-            "خیر",
-            "لغو",
-            "بیخیال",
-            "cancel",
-            "no",
-            "stop"
-        )
-    }
+    private fun isPositiveConfirmation(value: String) = PersianInput.isPositiveConfirmation(value)
+    private fun isNegativeConfirmation(value: String) = PersianInput.isNegativeConfirmation(value)
 
     private fun resolveActiveChatId(): Long {
         val prefs = getSharedPreferences(
@@ -1538,6 +1261,7 @@ class VoiceSessionForegroundService : Service() {
             chatStore.chatExists(saved)
         ) {
             activeChatId = saved
+            pendingConfirmationTask = null
             restoreActiveChatContext()
             return
         }
@@ -1578,13 +1302,15 @@ class VoiceSessionForegroundService : Service() {
         isOverlayRunning = false
         isBusy = false
         pendingConfirmationTask = null
+        agentJob?.cancel()
 
         try {
+            listening = false
             speechRecognizer?.cancel()
         } catch (_: Exception) {
         }
 
-        textToSpeech?.stop()
+        voiceSpeech?.stop()
         speechQueue.clear()
         resetStreamSpeech()
         abandonSpeechAudioFocus()
@@ -1614,9 +1340,9 @@ class VoiceSessionForegroundService : Service() {
         }
         speechRecognizer = null
 
-        textToSpeech?.stop()
-        textToSpeech?.shutdown()
-        textToSpeech = null
+        voiceSpeech?.stop()
+        voiceSpeech?.close()
+        voiceSpeech = null
         speechQueue.clear()
         resetStreamSpeech()
         abandonSpeechAudioFocus()

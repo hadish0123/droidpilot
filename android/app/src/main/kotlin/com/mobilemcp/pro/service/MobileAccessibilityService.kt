@@ -25,9 +25,9 @@ class MobileAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "MobileAccessibility"
-        var instance: MobileAccessibilityService? = null
+        @Volatile var instance: MobileAccessibilityService? = null
             private set
-        var isRunning = false
+        @Volatile var isRunning = false
             private set
     }
 
@@ -65,6 +65,17 @@ class MobileAccessibilityService : AccessibilityService() {
     private fun targetRootInActiveWindow(): AccessibilityNodeInfo? {
         val candidates = windows
             .sortedByDescending { it.layer }
+
+        // Notifications and Quick Settings can be the active system window.
+        // Prefer it over the application underneath, while excluding PRIME
+        // and input-method windows from the automation target.
+        for (window in candidates) {
+            if (!window.isActive && !window.isFocused) continue
+            if (window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD) continue
+            val root = window.root ?: continue
+            if (root.packageName?.toString() != packageName) return root
+            root.recycle()
+        }
 
         // Prefer an actual application window. This avoids accidentally
         // targeting PRIME's overlay, the keyboard, notification shade, etc.
@@ -107,7 +118,7 @@ class MobileAccessibilityService : AccessibilityService() {
         }
     }
 
-    fun handleCommand(request: CommandRequest): CommandResponse {
+    @Synchronized fun handleCommand(request: CommandRequest): CommandResponse {
         return try {
             when (request.command) {
                 "tap" -> executeTap(request.params)
