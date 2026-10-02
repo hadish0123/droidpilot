@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
@@ -105,7 +106,12 @@ class VoiceSessionForegroundService : Service() {
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
     private var ttsReady = false
-    private var pendingSpeech: String? = null
+    private var ttsSpeaking = false
+    private val speechQueue = ArrayDeque<String>()
+    private val streamSpeechBuffer = StringBuilder()
+    private var streamedSpeechStarted = false
+    private lateinit var audioManager: AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     private var sessionActive = false
     private var isBusy = false
@@ -119,6 +125,7 @@ class VoiceSessionForegroundService : Service() {
         // fully settled. Risky runtime objects are created only after PRIME is
         // successfully promoted to a microphone foreground service.
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         createNotificationChannel()
     }
 
@@ -171,7 +178,8 @@ class VoiceSessionForegroundService : Service() {
 
             val foregroundType =
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
                 } else {
                     0
                 }
@@ -203,10 +211,10 @@ class VoiceSessionForegroundService : Service() {
                 }
             }
 
-            scope.launch {
-                delay(300)
-                startListening()
-            }
+            // Audible startup check: this proves the device TTS path works
+            // before the first user request. If TTS is still initializing,
+            // the phrase stays queued and is spoken as soon as it is ready.
+            enqueueSpeech("پرایم آماده است", flush = true)
 
             return START_STICKY
         } catch (t: Throwable) {
