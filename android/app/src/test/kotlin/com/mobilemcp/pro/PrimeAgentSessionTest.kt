@@ -285,4 +285,44 @@ class PrimeAgentSessionTest {
     }
 
 
+    @Test fun runtimeConfirmationBlocksSensitiveToolBeforeAccessibilityRunner() = runBlocking {
+        ApiFixture().use { api ->
+            val agent = api.agent()
+            api.answers += """{"type":"action","command":"click_element","params":{"text":"ارسال"},"risk":"write"}"""
+
+            var actions = 0
+            val first = turn(
+                agent,
+                "پیام را ارسال کن",
+                { _, _ ->
+                    actions += 1
+                    PrimeActionResult(true, "sent")
+                }
+            )
+
+            assertTrue(first.needsConfirmation)
+            assertEquals(0, actions)
+            assertTrue(first.text.contains("حساس") || first.text.contains("تأیید"))
+
+            api.answers += """{"type":"action","command":"click_element","params":{"text":"ارسال"},"risk":"sensitive"}"""
+            api.answers += """{"type":"reply","text":"پیام ارسال شد"}"""
+
+            val confirmed = turn(
+                agent,
+                "پیام را ارسال کن",
+                { command, params ->
+                    actions += 1
+                    assertEquals("click_element", command)
+                    assertEquals("ارسال", params.getString("text"))
+                    PrimeActionResult(true, "sent")
+                },
+                confirmed = true
+            )
+
+            assertEquals(1, actions)
+            assertEquals("پیام ارسال شد", confirmed.text)
+        }
+    }
+
+
 }
