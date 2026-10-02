@@ -256,7 +256,7 @@ Never wrap JSON in markdown fences.
             }
 
             val raw = requestTextResponse(
-                model = model.slug,
+                model = model.id,
                 instructions = actionInstructions,
                 currentPrompt = prompt,
                 phoneAction = true
