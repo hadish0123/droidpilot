@@ -442,7 +442,7 @@ class VoiceSessionForegroundService : Service() {
         editMessage?.setText("")
         setOverlayFocusable(false)
         scope.launch {
-            delay(220)
+            delay(60)
             handleInput(text)
         }
     }
@@ -1045,7 +1045,18 @@ class VoiceSessionForegroundService : Service() {
 
         setOverlayFocusable(false)
         speechRecognizer?.cancel()
-        textToSpeech?.stop()
+
+        // A new user turn owns the audio channel. Drop stale speech from the
+        // previous turn, then let fresh response deltas start speaking as soon
+        // as the first natural phrase arrives.
+        try {
+            textToSpeech?.stop()
+        } catch (_: Throwable) {
+        }
+        ttsSpeaking = false
+        speechQueue.clear()
+        abandonSpeechAudioFocus()
+        resetStreamSpeech()
 
         var task = input
         var confirmed = false
@@ -1558,6 +1569,9 @@ class VoiceSessionForegroundService : Service() {
         }
 
         textToSpeech?.stop()
+        speechQueue.clear()
+        resetStreamSpeech()
+        abandonSpeechAudioFocus()
         hideKeyboard()
 
         val view = overlayView
@@ -1587,6 +1601,9 @@ class VoiceSessionForegroundService : Service() {
         textToSpeech?.stop()
         textToSpeech?.shutdown()
         textToSpeech = null
+        speechQueue.clear()
+        resetStreamSpeech()
+        abandonSpeechAudioFocus()
 
         val view = overlayView
         if (view != null) {
