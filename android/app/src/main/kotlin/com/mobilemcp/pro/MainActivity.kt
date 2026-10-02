@@ -33,6 +33,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
+import com.mobilemcp.pro.chat.StreamingTextAccumulator
 import com.mobilemcp.pro.databinding.ActivityMainBinding
 import com.mobilemcp.pro.server.WebSocketCommandServer
 import com.mobilemcp.pro.service.ConnectionForegroundService
@@ -73,6 +74,7 @@ class MainActivity : AppCompatActivity() {
     private var voiceDownload: Job? = null
     private var speechRecognizer: SpeechRecognizer? = null
     private var pendingConfirmationTask: String? = null
+    private var currentRequestJob: Job? = null
     private var isBusy = false
 
     private var voiceModeActive = false
@@ -183,6 +185,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnTestOpenAi.setOnClickListener { testOpenAiConnection() }
 
         binding.btnSend.setOnClickListener { sendCurrentMessage() }
+        binding.btnStop.setOnClickListener { stopCurrentRequest() }
         binding.btnMic.setOnClickListener { startVoiceInput(autoSend = false) }
         binding.btnVoice.setOnClickListener { enterVoiceMode() }
         binding.btnExitVoice.setOnClickListener { exitVoiceMode() }
@@ -733,7 +736,11 @@ class MainActivity : AppCompatActivity() {
         setBusy(true, "پرایم در حال انجام درخواست است…")
         if (fromVoiceMode) binding.tvVoiceStatus.text = "در حال آماده‌کردن پاسخ…"
 
-        appScope.launch {
+        val streamView =
+            if (fromVoiceMode) null else appendStreamingAssistant()
+        val streamText = StreamingTextAccumulator()
+
+        currentRequestJob = appScope.launch {
             try {
                 val outcome = withContext(Dispatchers.IO) {
                     primeAgent.run(
@@ -750,7 +757,23 @@ class MainActivity : AppCompatActivity() {
                                     binding.tvVoiceStatus.text = message
                                 }
                             }
-                        }
+                        },
+                        onTextDelta =
+                            if (fromVoiceMode) {
+                                null
+                            } else {
+                                { delta ->
+                                    val snapshot = streamText.append(delta)
+                                    runOnUiThread {
+                                        streamView?.let {
+                                            updateStreamingAssistant(
+                                                it,
+                                                snapshot
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                     )
                 }
 
@@ -763,21 +786,54 @@ class MainActivity : AppCompatActivity() {
                     binding.tvVoiceStatus.text = "پرایم در حال صحبت است…"
                     speak(outcome.text)
                 } else {
-                    appendChat("PRIME", outcome.text)
+                    streamView?.let {
+                        updateStreamingAssistant(it, outcome.text)
+                    }
+                    persistAssistantMessage(outcome.text)
                 }
-            } catch (e: CancellationException) {
-                throw e
+            } catch (_: CancellationException) {
+                if (fromVoiceMode) {
+                    binding.tvVoiceStatus.text = "متوقف شد"
+                } else {
+                    val partial = streamText.snapshot()
+                    val stoppedText =
+                        if (partial.isBlank()) {
+                            "پاسخ متوقف شد."
+                        } else {
+                            partial.trimEnd() + "\n\nمتوقف شد."
+                        }
+                    streamView?.let {
+                        updateStreamingAssistant(it, stoppedText)
+                    }
+                }
+                binding.tvAgentStatus.text = "متوقف شد"
             } catch (e: Exception) {
                 val message = userFriendlyError(e)
                 if (fromVoiceMode) {
                     binding.tvVoiceStatus.text = "اتصال قطع شد · دوباره تلاش کن"
                     speak(message)
                 } else {
-                    appendChat("PRIME", message, persist = false)
+                    streamView?.let {
+                        updateStreamingAssistant(it, message)
+                    }
                 }
             } finally {
+                currentRequestJob = null
                 setBusy(false)
             }
+        }
+    }
+
+    private fun stopCurrentRequest() {
+        val job = currentRequestJob ?: return
+        if (!job.isActive) return
+
+        voiceSpeech?.stop()
+        speechRecognizer?.cancel()
+        job.cancel(CancellationException("Stopped by user"))
+        binding.tvAgentStatus.text = "در حال توقف…"
+        if (voiceModeActive) {
+            binding.tvVoiceStatus.text = "در حال توقف…"
         }
     }
 
@@ -1207,9 +1263,91 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateComposerButtons() {
+        if (isBusy) {
+            binding.btnSend.visibility = View.GONE
+            binding.btnVoice.visibility = View.GONE
+            binding.btnStop.visibility = View.VISIBLE
+            return
+        }
+
+        binding.btnStop.visibility = View.GONE
         val hasText = !binding.etMessage.text.isNullOrBlank()
         binding.btnSend.visibility = if (hasText) View.VISIBLE else View.GONE
         binding.btnVoice.visibility = if (hasText) View.GONE else View.VISIBLE
+    }
+
+    private fun appendStreamingAssistant(): TextView {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.START
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(18)
+            }
+        }
+
+        val messageView = TextView(this).apply {
+            text = "PRIME\n…"
+            setTextColor(
+                ContextCompat.getColor(
+                    this@MainActivity,
+                    R.color.text_primary
+                )
+            )
+            textSize = 15f
+            setTextIsSelectable(true)
+            setLineSpacing(0f, 1.2f)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            maxWidth =
+                (resources.displayMetrics.widthPixels * 0.82f).toInt()
+            background = ContextCompat.getDrawable(
+                this@MainActivity,
+                R.drawable.chat_bg
+            )
+        }
+
+        row.addView(messageView)
+        binding.chatMessages.addView(row)
+        binding.chatScrollView.post {
+            binding.chatScrollView.fullScroll(View.FOCUS_DOWN)
+        }
+        return messageView
+    }
+
+    private fun updateStreamingAssistant(
+        view: TextView,
+        message: String
+    ) {
+        val content = message.ifBlank { "…" }.trimEnd()
+        view.text = "PRIME\n$content"
+        view.textDirection =
+            if (content.any { it.code in 0x0600..0x06FF }) {
+                View.TEXT_DIRECTION_RTL
+            } else {
+                View.TEXT_DIRECTION_INHERIT
+            }
+        binding.chatScrollView.post {
+            binding.chatScrollView.fullScroll(View.FOCUS_DOWN)
+        }
+    }
+
+    private fun persistAssistantMessage(message: String) {
+        if (
+            message.isBlank() ||
+            currentChatId <= 0L ||
+            !chatStore.chatExists(currentChatId)
+        ) {
+            return
+        }
+
+        chatStore.appendMessage(
+            currentChatId,
+            "assistant",
+            message
+        )
+        renderedMessageCount += 1
     }
 
     private fun appendChat(
@@ -1314,7 +1452,13 @@ class MainActivity : AppCompatActivity() {
         binding.btnSignOut.isEnabled = !busy
         binding.btnCreateNewChat.isEnabled = !busy
         binding.btnDeleteAllChats.isEnabled = !busy
-        binding.tvAgentStatus.text = status ?: if (busy) "پرایم در حال انجام درخواست است…" else "آماده"
+        binding.tvAgentStatus.text =
+            status ?: if (busy) {
+                "پرایم در حال انجام درخواست است…"
+            } else {
+                "آماده"
+            }
+        updateComposerButtons()
     }
 
     private fun startServer() {
