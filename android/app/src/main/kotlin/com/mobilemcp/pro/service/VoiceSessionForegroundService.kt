@@ -1055,6 +1055,7 @@ class VoiceSessionForegroundService : Service() {
         }
 
         isBusy = true
+        resetStreamSpeech()
         setControlsEnabled(false)
         updateStatus("Thinking…")
 
@@ -1072,6 +1073,11 @@ class VoiceSessionForegroundService : Service() {
                             scope.launch {
                                 updateStatus(progress)
                             }
+                        },
+                        onTextDelta = { delta ->
+                            scope.launch {
+                                acceptStreamSpeechDelta(delta)
+                            }
                         }
                     )
                 }
@@ -1088,14 +1094,16 @@ class VoiceSessionForegroundService : Service() {
 
                 isBusy = false
                 setControlsEnabled(true)
-                speak(outcome.text)
+                finishStreamSpeech(outcome.text)
             } catch (e: Exception) {
                 isBusy = false
                 setControlsEnabled(true)
 
                 val message = userFriendlyError(e)
+                streamSpeechBuffer.setLength(0)
+                streamedSpeechStarted = false
                 updateStatus("Connection issue")
-                speak(message)
+                enqueueSpeech(message, flush = false)
             }
         }
     }
