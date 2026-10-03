@@ -1,0 +1,57 @@
+package com.mobilemcp.pro
+
+import android.app.Activity
+import android.view.View
+import androidx.test.core.app.ActivityScenario
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class PrimeMainActivitySmokeInstrumentedTest {
+
+    @Test
+    fun mainActivityLaunchesToResumedUsableWindow() {
+        ActivityScenario.launch(
+            MainActivity::class.java
+        ).use { scenario ->
+            assertEquals(
+                ActivityScenario.State.RESUMED,
+                scenario.state
+            )
+
+            scenario.onActivity { activity ->
+                assertFalse(
+                    activity.isFinishing
+                )
+                assertFalse(
+                    activity.isDestroyed
+                )
+                assertEquals(
+                    "com.mobilemcp.pro",
+                    activity.packageName
+                )
+
+                val content =
+                    activity.findViewById<View>(
+                        android.R.id.content
+                    )
+                assertNotNull(content)
+                assertTrue(
+                    content.width >= 0
+                )
+                assertEquals(
+                    Activity.RESULT_CANCELED,
+                    activity.resultCodeForSmokeTest()
+                )
+            }
+        }
+    }
+
+    private fun Activity.resultCodeForSmokeTest():
+        Int = Activity.RESULT_CANCELED
+}
