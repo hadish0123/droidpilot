@@ -273,6 +273,58 @@ Never wrap JSON in markdown fences.
         if (
             !confirmedForTask &&
             !phoneTask &&
+            provider.supportsWebSearch &&
+            PrimeWebSearchIntent.shouldSearch(
+                userText
+            )
+        ) {
+            val model =
+                ensureModel(
+                    preferFast = false
+                )
+            onProgress(
+                "در حال جست‌وجوی وب…"
+            )
+
+            val window =
+                contextManager.buildWindow(
+                    userText
+                )
+            val request =
+                AiTextRequest(
+                    model = model.id,
+                    instructions =
+                        conversationInstructions +
+                            "\nUse web search for this request. " +
+                            "Prefer current primary sources and state uncertainty clearly.",
+                    messages =
+                        window.messages +
+                            AiMessage(
+                                "user",
+                                userText
+                            )
+                )
+
+            val result =
+                provider.searchWeb(
+                    request
+                )
+            val answer =
+                formatWebResult(
+                    result
+                )
+            remember(
+                userText,
+                answer
+            )
+            return PrimeOutcome(
+                answer
+            )
+        }
+
+        if (
+            !confirmedForTask &&
+            !phoneTask &&
             externalDefinitions.isEmpty()
         ) {
             val model = ensureModel(preferFast = true)
@@ -549,6 +601,43 @@ Never wrap JSON in markdown fences.
             "به سقف مراحل این عملیات رسیدم. صفحه را بررسی کن و اگر خواستی دستور را ادامه بده."
         remember(userText, text)
         return PrimeOutcome(text)
+    }
+
+    private fun formatWebResult(
+        result: AiWebResult
+    ): String {
+        if (
+            result.citations.isEmpty()
+        ) {
+            return result.text
+        }
+
+        return buildString {
+            append(
+                result.text.trim()
+            )
+            appendLine()
+            appendLine()
+            appendLine("منابع:")
+            result.citations
+                .take(8)
+                .forEachIndexed {
+                    index,
+                    citation ->
+                    append(index + 1)
+                    append(". ")
+                    citation.title
+                        ?.takeIf {
+                            it.isNotBlank()
+                        }
+                        ?.let {
+                            appendLine(it)
+                        }
+                    appendLine(
+                        citation.url
+                    )
+                }
+        }.trim()
     }
 
     private suspend fun runLocalAction(command: String, params: JSONObject,
