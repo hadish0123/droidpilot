@@ -512,10 +512,17 @@ class MainActivity : AppCompatActivity() {
         )
 
         val chats = chatStore.listChats()
+        val savedChat =
+            saved.takeIf { it > 0L }
+                ?.let(chatStore::chat)
         val target = when {
-            saved > 0 && chatStore.chatExists(saved) -> saved
-            chats.isNotEmpty() -> chats.first().id
-            else -> chatStore.createChat()
+            savedChat != null &&
+                !savedChat.isArchived ->
+                savedChat.id
+            chats.isNotEmpty() ->
+                chats.first().id
+            else ->
+                chatStore.createChat()
         }
 
         loadChat(target, showGreetingWhenEmpty = true)
@@ -622,10 +629,14 @@ class MainActivity : AppCompatActivity() {
                 null,
                 com.google.android.material.R.attr.materialButtonOutlinedStyle
             ).apply {
-                text = if (chat.id == currentChatId) {
-                    "• " + chat.title
-                } else {
-                    chat.title
+                text = buildString {
+                    if (chat.id == currentChatId) {
+                        append("• ")
+                    }
+                    if (chat.isPinned) {
+                        append("📌 ")
+                    }
+                    append(chat.title)
                 }
                 isAllCaps = false
                 textAlignment = View.TEXT_ALIGNMENT_VIEW_START
@@ -643,7 +654,7 @@ class MainActivity : AppCompatActivity() {
                     binding.drawerLayout.closeDrawer(Gravity.LEFT)
                 }
                 setOnLongClickListener {
-                    showRenameChat(chat)
+                    showChatActions(chat)
                     true
                 }
             }
@@ -666,6 +677,306 @@ class MainActivity : AppCompatActivity() {
             row.addView(deleteButton)
             binding.chatHistoryList.addView(row)
         }
+    }
+
+    private fun showChatActions(
+        chat: PrimeChatSummary
+    ) {
+        val options = arrayOf(
+            "تغییر نام",
+            if (chat.isPinned) "برداشتن سنجاق" else "سنجاق کردن",
+            "آرشیو",
+            "اشتراک / Export",
+            "حذف"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle(chat.title)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> showRenameChat(chat)
+                    1 -> {
+                        chatStore.setPinned(
+                            chat.id,
+                            !chat.isPinned
+                        )
+                        renderChatHistory()
+                    }
+                    2 -> archiveChat(chat)
+                    3 -> shareChat(chat.id)
+                    4 -> confirmDeleteChat(chat)
+                }
+            }
+            .setNegativeButton("بستن", null)
+            .show()
+    }
+
+    private fun archiveChat(
+        chat: PrimeChatSummary
+    ) {
+        if (isBusy) return
+        chatStore.setPinned(
+            chat.id,
+            false
+        )
+        chatStore.setArchived(
+            chat.id,
+            true
+        )
+
+        if (chat.id == currentChatId) {
+            val remaining =
+                chatStore.listChats()
+            val next = remaining
+                .firstOrNull()
+                ?.id
+                ?: chatStore.createChat()
+            loadChat(
+                next,
+                showGreetingWhenEmpty = true
+            )
+        } else {
+            renderChatHistory()
+        }
+    }
+
+    private fun showArchivedChats() {
+        val chats =
+            chatStore.archivedChats()
+
+        if (chats.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("آرشیو گفتگوها")
+                .setMessage(
+                    "گفت‌وگوی آرشیوشده‌ای وجود ندارد."
+                )
+                .setPositiveButton(
+                    "بستن",
+                    null
+                )
+                .show()
+            return
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("آرشیو گفتگوها")
+            .setItems(
+                chats.map {
+                    it.title
+                }.toTypedArray()
+            ) { _, which ->
+                val chat = chats[which]
+                AlertDialog.Builder(this)
+                    .setTitle(chat.title)
+                    .setItems(
+                        arrayOf(
+                            "بازگردانی و باز کردن",
+                            "اشتراک / Export",
+                            "حذف"
+                        )
+                    ) { _, action ->
+                        when (action) {
+                            0 -> {
+                                chatStore.setArchived(
+                                    chat.id,
+                                    false
+                                )
+                                loadChat(
+                                    chat.id,
+                                    showGreetingWhenEmpty = true
+                                )
+                            }
+                            1 -> shareChat(chat.id)
+                            2 -> confirmDeleteChat(chat)
+                        }
+                    }
+                    .setNegativeButton(
+                        "بستن",
+                        null
+                    )
+                    .show()
+            }
+            .setPositiveButton(
+                "بستن",
+                null
+            )
+            .show()
+    }
+
+    private fun showChatSearch() {
+        val input =
+            android.widget.EditText(this)
+                .apply {
+                    hint =
+                        "جست‌وجو در متن همهٔ گفتگوها"
+                    maxLines = 1
+                }
+
+        val dialog =
+            AlertDialog.Builder(this)
+                .setTitle(
+                    "جست‌وجوی گفتگوها"
+                )
+                .setView(input)
+                .setPositiveButton(
+                    "جست‌وجو",
+                    null
+                )
+                .setNegativeButton(
+                    "لغو",
+                    null
+                )
+                .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(
+                AlertDialog.BUTTON_POSITIVE
+            ).setOnClickListener {
+                val query =
+                    input.text
+                        ?.toString()
+                        .orEmpty()
+                        .trim()
+                if (query.isBlank()) {
+                    return@setOnClickListener
+                }
+
+                val results =
+                    chatStore.searchMessages(
+                        query,
+                        60
+                    )
+                dialog.dismiss()
+                showChatSearchResults(
+                    query,
+                    results
+                )
+            }
+        }
+        dialog.show()
+    }
+
+    private fun showChatSearchResults(
+        query: String,
+        results: List<PrimeStoredMessage>
+    ) {
+        if (results.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(
+                    "نتیجه‌ای پیدا نشد"
+                )
+                .setMessage(
+                    "برای «" +
+                        query.take(80) +
+                        "» نتیجه‌ای در گفتگوهای ذخیره‌شده نیست."
+                )
+                .setPositiveButton(
+                    "بستن",
+                    null
+                )
+                .show()
+            return
+        }
+
+        val chatMap =
+            chatStore
+                .listChats(
+                    includeArchived = true
+                )
+                .associateBy {
+                    it.id
+                }
+
+        val labels =
+            results.map { message ->
+                val title =
+                    chatMap[
+                        message.chatId
+                    ]?.title
+                        ?: "Conversation"
+                title +
+                    " · " +
+                    PrimeChatProductivity
+                        .snippet(
+                            message.content,
+                            110
+                        )
+            }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle(
+                "نتایج: " +
+                    query.take(50)
+            )
+            .setItems(
+                labels
+            ) { _, which ->
+                val message =
+                    results[which]
+                val chat =
+                    chatMap[
+                        message.chatId
+                    ]
+                if (
+                    chat != null &&
+                    chat.isArchived
+                ) {
+                    chatStore.setArchived(
+                        chat.id,
+                        false
+                    )
+                }
+                loadChat(
+                    message.chatId,
+                    showGreetingWhenEmpty = true
+                )
+                binding.drawerLayout
+                    .closeDrawers()
+            }
+            .setPositiveButton(
+                "بستن",
+                null
+            )
+            .show()
+    }
+
+    private fun shareChat(
+        chatId: Long
+    ) {
+        val chat =
+            chatStore.chat(chatId)
+                ?: return
+        val text =
+            PrimeChatProductivity
+                .exportText(
+                    chat,
+                    chatStore.messages(
+                        chatId
+                    )
+                )
+
+        val intent =
+            Intent(
+                Intent.ACTION_SEND
+            ).apply {
+                type = "text/plain"
+                putExtra(
+                    Intent.EXTRA_SUBJECT,
+                    "PRIME P6 · " +
+                        chat.title
+                )
+                putExtra(
+                    Intent.EXTRA_TEXT,
+                    text
+                )
+            }
+
+        startActivity(
+            Intent.createChooser(
+                intent,
+                "اشتراک گفت‌وگو"
+            )
+        )
     }
 
     private fun confirmDeleteChat(chat: PrimeChatSummary) {
@@ -1604,6 +1915,8 @@ class MainActivity : AppCompatActivity() {
             "تنظیمات گوشی",
             "پل اتصال دستگاه",
             "حافظهٔ PRIME",
+            "جست‌وجوی گفتگوها",
+            "آرشیو گفتگوها",
             "افزودن فایل",
             "فایل‌های این چت",
             "افزودن تصویر",
@@ -1630,15 +1943,17 @@ class MainActivity : AppCompatActivity() {
                     2 -> startActivity(Intent(Settings.ACTION_SETTINGS))
                     3 -> binding.drawerLayout.openDrawer(Gravity.RIGHT)
                     4 -> showMemoryManager()
-                    5 -> pickDocument()
-                    6 -> showAttachmentManager()
-                    7 -> pickImages()
-                    8 -> showImageManager()
-                    9 -> showTasks()
-                    10 -> showProviders()
-                    11 -> showDeveloperUsage()
-                    12 -> showPlugins()
-                    13 -> showMcpServers()
+                    5 -> showChatSearch()
+                    6 -> showArchivedChats()
+                    7 -> pickDocument()
+                    8 -> showAttachmentManager()
+                    9 -> pickImages()
+                    10 -> showImageManager()
+                    11 -> showTasks()
+                    12 -> showProviders()
+                    13 -> showDeveloperUsage()
+                    14 -> showPlugins()
+                    15 -> showMcpServers()
                 }
             }
             .show()
