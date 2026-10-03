@@ -69,6 +69,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var primeAgent: PrimeAgent
     private lateinit var chatStore: PrimeChatStore
     private lateinit var memoryStore: PrimeMemoryStore
+    private lateinit var providerStore: PrimeProviderStore
     private lateinit var mcpServerStore: PrimeMcpServerStore
     private lateinit var pluginManager: PrimePluginManager
     private lateinit var pluginManifestLoader: PrimePluginManifestLoader
@@ -146,6 +147,7 @@ class MainActivity : AppCompatActivity() {
 
         authManager = OpenAIAuthManager(applicationContext)
         memoryStore = PrimeMemoryStore(applicationContext)
+        providerStore = PrimeProviderStore(applicationContext)
         mcpServerStore = PrimeMcpServerStore(applicationContext)
         pluginManager = PrimePluginManager(
             context = applicationContext,
@@ -169,13 +171,7 @@ class MainActivity : AppCompatActivity() {
             mcpServerStore,
             mcpClient
         )
-        primeAgent = PrimeAgent(
-            authManager,
-            memoryStore,
-            attachmentSession,
-            mcpToolSource,
-            imageSession
-        )
+        primeAgent = buildPrimeAgent()
         chatStore = PrimeChatStore(applicationContext)
         bridgeSecurity = DeviceBridgeSecurity(SecureStore(applicationContext))
         bridgeAuthToken = bridgeSecurity.getOrCreateToken()
@@ -1611,6 +1607,7 @@ class MainActivity : AppCompatActivity() {
             "افزودن تصویر",
             "تصاویر این چت",
             "Tasks & Automations",
+            "AI Providers",
             "Plugins",
             "MCP Servers"
         )
@@ -1635,10 +1632,428 @@ class MainActivity : AppCompatActivity() {
                     7 -> pickImages()
                     8 -> showImageManager()
                     9 -> showTasks()
-                    10 -> showPlugins()
-                    11 -> showMcpServers()
+                    10 -> showProviders()
+                    11 -> showPlugins()
+                    12 -> showMcpServers()
                 }
             }
+            .show()
+    }
+
+    private fun buildPrimeAgent(): PrimeAgent {
+        val activeId =
+            providerStore.activeId()
+        val profile =
+            if (
+                activeId ==
+                PrimeProviderStore
+                    .CHATGPT_ID
+            ) {
+                null
+            } else {
+                providerStore.get(
+                    activeId
+                )
+            }
+
+        if (
+            activeId !=
+                PrimeProviderStore
+                    .CHATGPT_ID &&
+            profile == null
+        ) {
+            providerStore.setActive(
+                PrimeProviderStore
+                    .CHATGPT_ID
+            )
+        }
+
+        return if (profile == null) {
+            PrimeAgent(
+                authManager,
+                memoryStore,
+                attachmentSession,
+                mcpToolSource,
+                imageSession
+            )
+        } else {
+            PrimeAgent(
+                provider =
+                    PrimeProviderFactory
+                        .create(profile),
+                memorySource =
+                    memoryStore,
+                fileContextSource =
+                    attachmentSession,
+                externalToolSource =
+                    mcpToolSource,
+                imageContextSource =
+                    imageSession
+            )
+        }
+    }
+
+    private fun rebuildPrimeAgent() {
+        primeAgent = buildPrimeAgent()
+
+        if (
+            ::chatStore.isInitialized &&
+            currentChatId > 0L &&
+            chatStore.chatExists(
+                currentChatId
+            )
+        ) {
+            val messages =
+                chatStore.messages(
+                    currentChatId
+                )
+            primeAgent
+                .restoreConversation(
+                    messages.map {
+                        it.role to
+                            it.content
+                    }
+                )
+        }
+
+        warmUpPrime()
+        updateAuthUI()
+    }
+
+    private fun showProviders() {
+        val profiles =
+            providerStore.list()
+        val activeId =
+            providerStore.activeId()
+
+        val labels =
+            buildList {
+                add(
+                    "ChatGPT Plan" +
+                        if (
+                            activeId ==
+                            PrimeProviderStore
+                                .CHATGPT_ID
+                        ) {
+                            " · فعال"
+                        } else {
+                            ""
+                        }
+                )
+                profiles.forEach {
+                    profile ->
+                    add(
+                        profile.name +
+                            " · " +
+                            profile.kind
+                                .name
+                                .lowercase() +
+                            if (
+                                activeId ==
+                                profile.id
+                            ) {
+                                " · فعال"
+                            } else {
+                                ""
+                            }
+                    )
+                }
+            }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("AI Providers")
+            .setItems(labels) {
+                _,
+                which ->
+                if (which == 0) {
+                    providerStore
+                        .setActive(
+                            PrimeProviderStore
+                                .CHATGPT_ID
+                        )
+                    rebuildPrimeAgent()
+                    Toast.makeText(
+                        this,
+                        "ChatGPT Plan فعال شد",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    showProviderDetails(
+                        profiles[
+                            which - 1
+                        ]
+                    )
+                }
+            }
+            .setPositiveButton(
+                "افزودن Provider"
+            ) { _, _ ->
+                chooseProviderKind()
+            }
+            .setNegativeButton(
+                "بستن",
+                null
+            )
+            .show()
+    }
+
+    private fun chooseProviderKind() {
+        val kinds =
+            arrayOf(
+                PrimeProviderKind
+                    .OPENROUTER,
+                PrimeProviderKind
+                    .GEMINI,
+                PrimeProviderKind
+                    .ANTHROPIC,
+                PrimeProviderKind
+                    .OPENAI_COMPATIBLE
+            )
+        val labels =
+            arrayOf(
+                "OpenRouter",
+                "Google Gemini",
+                "Anthropic Claude",
+                "OpenAI-compatible / Local"
+            )
+
+        AlertDialog.Builder(this)
+            .setTitle(
+                "نوع Provider"
+            )
+            .setItems(
+                labels
+            ) { _, which ->
+                showAddProviderDialog(
+                    kinds[which]
+                )
+            }
+            .setNegativeButton(
+                "لغو",
+                null
+            )
+            .show()
+    }
+
+    private fun showAddProviderDialog(
+        kind: PrimeProviderKind
+    ) {
+        val panel =
+            LinearLayout(this).apply {
+                orientation =
+                    LinearLayout.VERTICAL
+                setPadding(
+                    dp(24),
+                    dp(8),
+                    dp(24),
+                    dp(4)
+                )
+            }
+
+        fun textInput(
+            hintText: String
+        ) = android.widget
+            .EditText(this)
+            .apply {
+                hint = hintText
+                maxLines = 2
+            }
+
+        val name =
+            textInput(
+                "نام Profile"
+            ).apply {
+                setText(
+                    when (kind) {
+                        PrimeProviderKind
+                            .OPENROUTER ->
+                            "OpenRouter"
+                        PrimeProviderKind
+                            .GEMINI ->
+                            "Gemini"
+                        PrimeProviderKind
+                            .ANTHROPIC ->
+                            "Anthropic"
+                        PrimeProviderKind
+                            .OPENAI_COMPATIBLE ->
+                            "Local / Custom"
+                    }
+                )
+            }
+        val base =
+            textInput(
+                "Base URL"
+            ).apply {
+                setText(
+                    PrimeProviderDefaults
+                        .baseUrl(kind)
+                )
+            }
+        val model =
+            textInput(
+                "Model ID"
+            ).apply {
+                setText(
+                    PrimeProviderDefaults
+                        .modelHint(kind)
+                )
+            }
+        val key =
+            textInput(
+                if (
+                    kind ==
+                    PrimeProviderKind
+                        .OPENAI_COMPATIBLE
+                ) {
+                    "API key (اختیاری)"
+                } else {
+                    "API key"
+                }
+            ).apply {
+                inputType =
+                    android.text
+                        .InputType
+                        .TYPE_CLASS_TEXT or
+                        android.text
+                            .InputType
+                            .TYPE_TEXT_VARIATION_PASSWORD
+                maxLines = 1
+            }
+
+        panel.addView(name)
+        panel.addView(base)
+        panel.addView(model)
+        panel.addView(key)
+
+        AlertDialog.Builder(this)
+            .setTitle(
+                "افزودن Provider"
+            )
+            .setView(panel)
+            .setPositiveButton(
+                "ذخیره و فعال"
+            ) { _, _ ->
+                try {
+                    val profile =
+                        providerStore.save(
+                            name = name.text
+                                ?.toString()
+                                .orEmpty(),
+                            kind = kind,
+                            baseUrl = base.text
+                                ?.toString()
+                                .orEmpty(),
+                            model = model.text
+                                ?.toString()
+                                .orEmpty(),
+                            apiKey = key.text
+                                ?.toString()
+                        )
+                    providerStore
+                        .setActive(
+                            profile.id
+                        )
+                    rebuildPrimeAgent()
+                    Toast.makeText(
+                        this,
+                        profile.name +
+                            " فعال شد",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } catch (e: Exception) {
+                    appendChat(
+                        "PRIME",
+                        "Provider ذخیره نشد: " +
+                            (
+                                e.message
+                                    ?: "تنظیم نامعتبر"
+                            ).take(500),
+                        persist = false
+                    )
+                }
+            }
+            .setNegativeButton(
+                "لغو",
+                null
+            )
+            .show()
+    }
+
+    private fun showProviderDetails(
+        profile: PrimeProviderProfile
+    ) {
+        val active =
+            providerStore.activeId() ==
+                profile.id
+
+        val details =
+            buildString {
+                appendLine(
+                    profile.kind
+                        .name
+                )
+                appendLine()
+                appendLine(
+                    profile.baseUrl
+                )
+                append(
+                    "Model: "
+                )
+                appendLine(
+                    profile.model
+                )
+                append(
+                    "API key: "
+                )
+                append(
+                    if (
+                        profile.apiKey
+                            .isNullOrBlank()
+                    ) {
+                        "none"
+                    } else {
+                        "stored encrypted"
+                    }
+                )
+            }
+
+        AlertDialog.Builder(this)
+            .setTitle(
+                profile.name +
+                    if (active) {
+                        " · فعال"
+                    } else {
+                        ""
+                    }
+            )
+            .setMessage(details)
+            .setPositiveButton(
+                "فعال کن"
+            ) { _, _ ->
+                providerStore
+                    .setActive(
+                        profile.id
+                    )
+                rebuildPrimeAgent()
+            }
+            .setNeutralButton(
+                "حذف"
+            ) { _, _ ->
+                val wasActive =
+                    providerStore
+                        .activeId() ==
+                        profile.id
+                providerStore.remove(
+                    profile.id
+                )
+                if (wasActive) {
+                    rebuildPrimeAgent()
+                }
+            }
+            .setNegativeButton(
+                "بستن",
+                null
+            )
             .show()
     }
 
