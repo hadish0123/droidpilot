@@ -281,3 +281,5 @@ See [TESTING.md](TESTING.md) for the physical-device acceptance checks.
 This repository remains under the MIT License. PRIME P6 is derived from the open-source DroidPilot project by Youichi Uda. The original MIT copyright notice is preserved in `LICENSE`.
 
 See `NOTICE.md` for attribution.
+
+- Chat message history supports long-press copy, non-destructive edit-and-branch, regenerate-in-branch, and explicit conversation branching while preserving the original thread.

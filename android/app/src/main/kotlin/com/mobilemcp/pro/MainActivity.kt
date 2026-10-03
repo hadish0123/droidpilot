@@ -564,11 +564,14 @@ class MainActivity : AppCompatActivity() {
 
         renderedMessageCount = messages.size
         messages.forEach { stored ->
-            appendChat(
-                if (stored.role == "user") "شما" else "PRIME",
-                stored.content,
-                persist = false
+            val bubble = addChatBubble(
+                isUser = stored.role == "user",
+                message = stored.content
             )
+            bubble.setOnLongClickListener {
+                showMessageActions(stored)
+                true
+            }
         }
 
         if (messages.isEmpty()) {
@@ -584,6 +587,116 @@ class MainActivity : AppCompatActivity() {
         }
 
         renderChatHistory()
+    }
+
+    private fun showMessageActions(
+        message: PrimeStoredMessage
+    ) {
+        if (isBusy) return
+        val options = if (message.role == "user") {
+            arrayOf(
+                "ویرایش و ادامه در شاخهٔ جدید",
+                "شاخهٔ جدید از اینجا",
+                "کپی متن"
+            )
+        } else {
+            arrayOf(
+                "تولید دوباره در شاخهٔ جدید",
+                "شاخهٔ جدید از اینجا",
+                "کپی متن"
+            )
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(if (message.role == "user") "پیام شما" else "پاسخ PRIME")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> if (message.role == "user") {
+                        editAndBranchMessage(message)
+                    } else {
+                        regenerateInBranch(message)
+                    }
+                    1 -> branchThroughMessage(message)
+                    2 -> copyMessageText(message.content)
+                }
+            }
+            .setNegativeButton("بستن", null)
+            .show()
+    }
+
+    private fun editAndBranchMessage(
+        message: PrimeStoredMessage
+    ) {
+        val input = android.widget.EditText(this).apply {
+            setText(message.content)
+            setSelection(text.length)
+            minLines = 2
+            maxLines = 8
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("ویرایش و ادامه در شاخهٔ جدید")
+            .setMessage("گفت‌وگوی اصلی بدون تغییر حفظ می‌شود.")
+            .setView(input)
+            .setPositiveButton("ساخت شاخه", null)
+            .setNegativeButton("لغو", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener {
+                    val edited = input.text?.toString()?.trim().orEmpty()
+                    if (edited.isBlank()) return@setOnClickListener
+                    val branchId = chatStore.forkBeforeMessage(
+                        message.id,
+                        " · edit"
+                    )
+                    dialog.dismiss()
+                    loadChat(branchId, showGreetingWhenEmpty = false)
+                    handleInput(edited, fromVoiceMode = false)
+                }
+        }
+        dialog.show()
+    }
+
+    private fun regenerateInBranch(
+        assistantMessage: PrimeStoredMessage
+    ) {
+        val messages = chatStore.messages(assistantMessage.chatId)
+        val user = messages
+            .takeWhile { it.id < assistantMessage.id }
+            .lastOrNull { it.role == "user" }
+            ?: return
+
+        val branchId = chatStore.forkBeforeMessage(
+            user.id,
+            " · regenerate"
+        )
+        loadChat(branchId, showGreetingWhenEmpty = false)
+        handleInput(user.content, fromVoiceMode = false)
+    }
+
+    private fun branchThroughMessage(
+        message: PrimeStoredMessage
+    ) {
+        val branchId = chatStore.forkThroughMessage(
+            message.id
+        )
+        loadChat(branchId, showGreetingWhenEmpty = false)
+        renderChatHistory()
+        Toast.makeText(
+            this,
+            "شاخهٔ جدید ساخته شد",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun copyMessageText(text: String) {
+        val clipboard =
+            getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(
+            android.content.ClipData.newPlainText("PRIME message", text)
+        )
+        binding.tvAgentStatus.text = "متن کپی شد"
     }
 
     private fun syncChatIfChanged() {
@@ -1107,7 +1220,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleInput(
         input: String,
-        fromVoiceMode: Boolean = voiceModeActive
+        fromVoiceMode: Boolean = voiceModeActive,
+        persistUserMessage: Boolean = true
     ) {
         if (isBusy) return
         if (VoiceSessionForegroundService.isOverlayRunning) {
@@ -1116,7 +1230,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (fromVoiceMode) {
             binding.tvVoiceStatus.text = "You: " + input.take(120)
-        } else {
+        } else if (persistUserMessage) {
             appendChat("شما", input)
         }
 

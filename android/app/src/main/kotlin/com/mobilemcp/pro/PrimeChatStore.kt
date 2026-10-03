@@ -377,6 +377,136 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
     }
 
     @Synchronized
+    fun message(messageId: Long): PrimeStoredMessage? {
+        readableDatabase.query(
+            TABLE_MESSAGES,
+            arrayOf(
+                "id", "chat_id", "role", "content",
+                "created_at", "status", "parent_message_id", "metadata_json"
+            ),
+            "id=?",
+            arrayOf(messageId.toString()),
+            null, null, null, "1"
+        ).use { cursor ->
+            return if (cursor.moveToFirst()) storedMessage(cursor) else null
+        }
+    }
+
+    /**
+     * Creates a new conversation containing every visible turn before [messageId].
+     * The source conversation is never mutated, so edit/regenerate operations are
+     * durable branches instead of destructive rewrites.
+     */
+    @Synchronized
+    fun forkBeforeMessage(
+        messageId: Long,
+        titleSuffix: String = " · branch"
+    ): Long {
+        val source = message(messageId)
+            ?: throw IllegalArgumentException("Unknown message: $messageId")
+        val sourceChat = chat(source.chatId)
+            ?: throw IllegalArgumentException("Unknown chat: ${source.chatId}")
+        val sourceMessages = messages(source.chatId)
+            .filter { it.id < messageId }
+
+        val now = System.currentTimeMillis()
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val title = (sourceChat.title + titleSuffix).take(80)
+            val newChatId = db.insertOrThrow(
+                TABLE_CHATS,
+                null,
+                ContentValues().apply {
+                    put("title", title)
+                    put("created_at", now)
+                    put("updated_at", now)
+                    put("pinned", 0)
+                    put("archived", 0)
+                }
+            )
+
+            var previousNewId: Long? = null
+            sourceMessages.forEach { old ->
+                val newId = db.insertOrThrow(
+                    TABLE_MESSAGES,
+                    null,
+                    ContentValues().apply {
+                        put("chat_id", newChatId)
+                        put("role", old.role)
+                        put("content", old.content)
+                        put("created_at", old.createdAt)
+                        put("status", old.status)
+                        if (previousNewId == null) putNull("parent_message_id")
+                        else put("parent_message_id", previousNewId)
+                        if (old.metadataJson == null) putNull("metadata_json")
+                        else put("metadata_json", old.metadataJson)
+                    }
+                )
+                previousNewId = newId
+            }
+
+            db.setTransactionSuccessful()
+            return newChatId
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    @Synchronized
+    fun forkThroughMessage(
+        messageId: Long,
+        titleSuffix: String = " · branch"
+    ): Long {
+        val source = message(messageId)
+            ?: throw IllegalArgumentException("Unknown message: $messageId")
+        val sourceChat = chat(source.chatId)
+            ?: throw IllegalArgumentException("Unknown chat: ${source.chatId}")
+        val sourceMessages = messages(source.chatId)
+            .filter { it.id <= messageId }
+
+        val now = System.currentTimeMillis()
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val newChatId = db.insertOrThrow(
+                TABLE_CHATS,
+                null,
+                ContentValues().apply {
+                    put("title", (sourceChat.title + titleSuffix).take(80))
+                    put("created_at", now)
+                    put("updated_at", now)
+                    put("pinned", 0)
+                    put("archived", 0)
+                }
+            )
+            var previousNewId: Long? = null
+            sourceMessages.forEach { old ->
+                val newId = db.insertOrThrow(
+                    TABLE_MESSAGES,
+                    null,
+                    ContentValues().apply {
+                        put("chat_id", newChatId)
+                        put("role", old.role)
+                        put("content", old.content)
+                        put("created_at", old.createdAt)
+                        put("status", old.status)
+                        if (previousNewId == null) putNull("parent_message_id")
+                        else put("parent_message_id", previousNewId)
+                        if (old.metadataJson == null) putNull("metadata_json")
+                        else put("metadata_json", old.metadataJson)
+                    }
+                )
+                previousNewId = newId
+            }
+            db.setTransactionSuccessful()
+            return newChatId
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    @Synchronized
     fun updateMessageStatus(
         messageId: Long,
         status: String,
