@@ -11,7 +11,9 @@ internal data class PrimeSessionImage(
     val id: Long,
     val input: AiImageInput,
     val byteSize: Int,
-    val addedAt: Long
+    val addedAt: Long,
+    val persistedAttachmentId: Long? = null,
+    val storageUri: String? = null
 )
 
 internal interface PrimeImageContextSource {
@@ -132,7 +134,9 @@ internal class PrimeImageSession(
     @Synchronized
     fun add(
         input: AiImageInput,
-        byteSize: Int
+        byteSize: Int,
+        persistedAttachmentId: Long? = null,
+        storageUri: String? = null
     ): PrimeSessionImage {
         require(byteSize > 0) {
             "Image is empty"
@@ -150,7 +154,10 @@ internal class PrimeImageSession(
                 input = input,
                 byteSize = byteSize,
                 addedAt =
-                    System.currentTimeMillis()
+                    System.currentTimeMillis(),
+                persistedAttachmentId =
+                    persistedAttachmentId,
+                storageUri = storageUri
             )
         images.addLast(item)
 
