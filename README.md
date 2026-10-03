@@ -13,7 +13,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 - Fresh-information queries can use the Responses API hosted web search tool with visible source URLs
 - Explicit long-term memory for facts, preferences and projects, encrypted locally with Android Keystore
 - Hybrid local memory retrieval combines normalized lexical evidence, feature-hash vector similarity, recency/kind signals, near-duplicate upserts and a separate bounded context budget
-- Session attachments with local text extraction for PDF, TXT/MD, CSV, JSON, DOCX, XLSX and PPTX
+- Chat-scoped persistent attachments with local text extraction for PDF, TXT/MD, CSV, JSON, DOCX, XLSX and PPTX
 - Session image attachments (PNG/JPEG/WEBP) with Responses API vision analysis
 - Android-side multi-server MCP client with encrypted server/token storage and 2026/2025 protocol negotiation
 - Installable PRIME Plugin manifests (prime.plugin.v1) with enable/disable/uninstall lifecycle backed by the MCP runtime
@@ -45,7 +45,7 @@ PRIME is designed local-first:
 - Explicit PRIME long-term memories are also encrypted with Android Keystore; PRIME does not silently extract memories from every conversation. Retrieval and feature-hash vectors are computed locally, and unrelated memories are filtered before any bounded memory context is added to Chat, Web Search or Vision requests.
 - Access and refresh tokens are never written to source code or app logs.
 - Phone actions execute locally on the Android device.
-- Attached documents are parsed locally. Extracted attachment text is kept only in the active in-memory chat session, and only relevant excerpts are sent with a model request.
+- OpenDocument URI read access is persisted only for attachments the user explicitly selects, allowing the same chat to rehydrate its files/images after navigation or app restart.\n- Attached documents are parsed locally. Extracted attachment text is kept only in the active in-memory chat session, and only relevant excerpts are sent with a model request.
 - Web search is opt-in by request intent: ordinary stable questions do not invoke hosted search. Search answers surface source URLs in the chat UI.
 - Images remain in the active in-memory chat session and are sent to the provider only for a visual-analysis request. Visible instructions inside images are explicitly treated as untrusted data.
 - The optional Device Bridge is off until the user starts it.
