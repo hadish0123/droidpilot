@@ -70,6 +70,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var chatStore: PrimeChatStore
     private lateinit var memoryStore: PrimeMemoryStore
     private lateinit var providerStore: PrimeProviderStore
+    private lateinit var observabilityStore: PrimeObservabilityStore
     private lateinit var mcpServerStore: PrimeMcpServerStore
     private lateinit var pluginManager: PrimePluginManager
     private lateinit var pluginManifestLoader: PrimePluginManifestLoader
@@ -148,6 +149,7 @@ class MainActivity : AppCompatActivity() {
         authManager = OpenAIAuthManager(applicationContext)
         memoryStore = PrimeMemoryStore(applicationContext)
         providerStore = PrimeProviderStore(applicationContext)
+        observabilityStore = PrimeObservabilityStore(applicationContext)
         mcpServerStore = PrimeMcpServerStore(applicationContext)
         pluginManager = PrimePluginManager(
             context = applicationContext,
@@ -1608,6 +1610,7 @@ class MainActivity : AppCompatActivity() {
             "تصاویر این چت",
             "Tasks & Automations",
             "AI Providers",
+            "Developer / Usage",
             "Plugins",
             "MCP Servers"
         )
@@ -1633,8 +1636,9 @@ class MainActivity : AppCompatActivity() {
                     8 -> showImageManager()
                     9 -> showTasks()
                     10 -> showProviders()
-                    11 -> showPlugins()
-                    12 -> showMcpServers()
+                    11 -> showDeveloperUsage()
+                    12 -> showPlugins()
+                    13 -> showMcpServers()
                 }
             }
             .show()
@@ -1668,29 +1672,43 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        return if (profile == null) {
-            PrimeAgent(
-                authManager,
+        val baseProvider =
+            if (profile == null) {
+                OpenAIResponsesProvider(
+                    object :
+                        PrimeCredentials {
+                        override fun isSignedIn() =
+                            authManager
+                                .isSignedIn()
+
+                        override suspend fun accessToken() =
+                            authManager
+                                .accessToken()
+                    }
+                )
+            } else {
+                PrimeProviderFactory
+                    .create(profile)
+            }
+
+        val observedProvider =
+            PrimeObservedProvider(
+                baseProvider,
+                observabilityStore
+            )
+
+        return PrimeAgent(
+            provider =
+                observedProvider,
+            memorySource =
                 memoryStore,
+            fileContextSource =
                 attachmentSession,
+            externalToolSource =
                 mcpToolSource,
+            imageContextSource =
                 imageSession
-            )
-        } else {
-            PrimeAgent(
-                provider =
-                    PrimeProviderFactory
-                        .create(profile),
-                memorySource =
-                    memoryStore,
-                fileContextSource =
-                    attachmentSession,
-                externalToolSource =
-                    mcpToolSource,
-                imageContextSource =
-                    imageSession
-            )
-        }
+        )
     }
 
     private fun rebuildPrimeAgent() {
@@ -1718,6 +1736,155 @@ class MainActivity : AppCompatActivity() {
 
         warmUpPrime()
         updateAuthUI()
+    }
+
+    private fun showDeveloperUsage() {
+        val summary =
+            observabilityStore
+                .summary()
+        val recent =
+            observabilityStore
+                .recent(20)
+
+        val details =
+            buildString {
+                appendLine(
+                    "AI calls: " +
+                        summary.calls
+                )
+                appendLine(
+                    "Failures: " +
+                        summary.failures
+                )
+                appendLine(
+                    "Estimated input tokens: " +
+                        summary
+                            .estimatedInputTokens
+                )
+                appendLine(
+                    "Estimated output tokens: " +
+                        summary
+                            .estimatedOutputTokens
+                )
+                appendLine(
+                    "Average latency: " +
+                        summary
+                            .averageLatencyMs +
+                        " ms"
+                )
+
+                if (
+                    summary.byProvider
+                        .isNotEmpty()
+                ) {
+                    appendLine()
+                    appendLine(
+                        "By provider:"
+                    )
+                    summary.byProvider
+                        .toList()
+                        .sortedByDescending {
+                            it.second
+                        }
+                        .forEach {
+                            (provider, count) ->
+                            append("• ")
+                            append(provider)
+                            append(": ")
+                            appendLine(count)
+                        }
+                }
+
+                if (
+                    recent.isNotEmpty()
+                ) {
+                    appendLine()
+                    appendLine(
+                        "Recent:"
+                    )
+                    recent.forEach {
+                        event ->
+                        append("• ")
+                        append(
+                            event.operation
+                                .name
+                                .lowercase()
+                        )
+                        append(" · ")
+                        append(
+                            event.providerId
+                        )
+                        event.model?.let {
+                            append(" · ")
+                            append(
+                                it.take(60)
+                            )
+                        }
+                        append(" · ")
+                        append(
+                            event.durationMs
+                        )
+                        append("ms · ")
+                        append(
+                            event.estimatedInputTokens
+                        )
+                        append("/")
+                        append(
+                            event.estimatedOutputTokens
+                        )
+                        append(" tok")
+                        if (
+                            event.mediaItems >
+                            0
+                        ) {
+                            append(" · ")
+                            append(
+                                event.mediaItems
+                            )
+                            append(
+                                " media"
+                            )
+                        }
+                        if (!event.success) {
+                            append(" · ERROR")
+                            event.errorType
+                                ?.let {
+                                    append("(")
+                                    append(it)
+                                    append(")")
+                                }
+                        }
+                        appendLine()
+                    }
+                }
+
+                appendLine()
+                append(
+                    "Token counts are local estimates for diagnostics, not provider billing totals."
+                )
+            }.trim()
+
+        AlertDialog.Builder(this)
+            .setTitle(
+                "Developer / Usage"
+            )
+            .setMessage(details)
+            .setPositiveButton(
+                "بستن",
+                null
+            )
+            .setNegativeButton(
+                "پاک کردن آمار"
+            ) { _, _ ->
+                observabilityStore
+                    .clear()
+                Toast.makeText(
+                    this,
+                    "آمار محلی پاک شد",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .show()
     }
 
     private fun showProviders() {

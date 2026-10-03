@@ -8,6 +8,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 
 - Chat directly inside the Android app with live streamed text and user-controlled Stop generation
 - Provider registry for ChatGPT Plan, OpenRouter, Google Gemini, Anthropic Claude and OpenAI-compatible local/custom endpoints
+- Local Developer / Usage observability for provider calls, latency, failures and estimated input/output tokens
 - Fresh-information queries can use the Responses API hosted web search tool with visible source URLs
 - Explicit long-term memory for facts, preferences and projects, encrypted locally with Android Keystore
 - Session attachments with local text extraction for PDF, TXT/MD, CSV, JSON, DOCX, XLSX and PPTX
@@ -37,6 +38,7 @@ PRIME is designed local-first:
 
 - ChatGPT OAuth tokens are encrypted with the Android Keystore before being stored.
 - External provider profiles and API keys are also stored inside Android Keystore-backed SecureStore. Remote custom endpoints must use HTTPS; HTTP is limited to literal loopback development endpoints.
+- Usage telemetry stores no prompt or response bodies. It records only local request metadata such as provider, operation, model, latency, success/failure and approximate token counts, and can be cleared from the app.
 - Explicit PRIME long-term memories are also encrypted with Android Keystore; PRIME does not silently extract memories from every conversation.
 - Access and refresh tokens are never written to source code or app logs.
 - Phone actions execute locally on the Android device.
