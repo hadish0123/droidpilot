@@ -12,6 +12,7 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.provider.Settings
+import android.provider.OpenableColumns
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -587,7 +588,116 @@ class MainActivity : AppCompatActivity() {
         }
 
         renderChatHistory()
+        rehydrateChatAttachments(chatId)
     }
+
+    private fun rehydrateChatAttachments(
+        chatId: Long
+    ) {
+        val stored = chatStore.attachments(chatId)
+        if (stored.isEmpty()) return
+
+        appScope.launch {
+            var restored = 0
+            var unavailable = 0
+
+            stored.forEach { attachment ->
+                if (currentChatId != chatId) return@launch
+
+                try {
+                    when (attachment.kind) {
+                        "document" -> {
+                            val uri = Uri.parse(
+                                attachment.storageUri
+                            )
+                            val parsed = withContext(
+                                Dispatchers.IO
+                            ) {
+                                documentPipeline.parse(uri)
+                            }
+                            if (currentChatId != chatId) return@launch
+                            attachmentSession.add(
+                                parsed,
+                                persistedAttachmentId =
+                                    attachment.id,
+                                storageUri =
+                                    attachment.storageUri
+                            )
+                            restored += 1
+                        }
+
+                        "image" -> {
+                            val uri = Uri.parse(
+                                attachment.storageUri
+                            )
+                            val pair = withContext(
+                                Dispatchers.IO
+                            ) {
+                                imageLoader.load(uri)
+                            }
+                            if (currentChatId != chatId) return@launch
+                            imageSession.add(
+                                pair.first,
+                                pair.second,
+                                persistedAttachmentId =
+                                    attachment.id,
+                                storageUri =
+                                    attachment.storageUri
+                            )
+                            restored += 1
+                        }
+                    }
+                } catch (_: Exception) {
+                    unavailable += 1
+                }
+            }
+
+            if (
+                currentChatId == chatId &&
+                unavailable > 0
+            ) {
+                binding.tvAgentStatus.text =
+                    restored.toString() +
+                        " پیوست بازیابی شد · " +
+                        unavailable +
+                        " پیوست در دسترس نیست"
+            }
+        }
+    }
+
+    private fun persistReadAccess(
+        uri: Uri
+    ): Boolean =
+        runCatching {
+            contentResolver
+                .takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            true
+        }.getOrDefault(false)
+
+    private fun queryUriSize(
+        uri: Uri
+    ): Long? =
+        runCatching {
+            contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.SIZE),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (
+                    cursor.moveToFirst() &&
+                    !cursor.isNull(0)
+                ) {
+                    cursor.getLong(0)
+                } else {
+                    null
+                }
+            }
+        }.getOrNull()
 
     private fun showMessageActions(
         message: PrimeStoredMessage
@@ -3910,9 +4020,36 @@ class MainActivity : AppCompatActivity() {
                                     uri
                                 )
                             }
+                        val persistent =
+                            persistReadAccess(uri)
+                        val storedId =
+                            if (persistent) {
+                                chatStore.addAttachment(
+                                    chatId = currentChatId,
+                                    kind = "image",
+                                    displayName =
+                                        pair.first.name,
+                                    mimeType =
+                                        pair.first.mimeType,
+                                    storageUri =
+                                        uri.toString(),
+                                    sizeBytes =
+                                        pair.second.toLong()
+                                )
+                            } else {
+                                null
+                            }
                         imageSession.add(
                             pair.first,
-                            pair.second
+                            pair.second,
+                            persistedAttachmentId =
+                                storedId,
+                            storageUri =
+                                if (persistent) {
+                                    uri.toString()
+                                } else {
+                                    null
+                                }
                         )
                         added += 1
                     } catch (e: Exception) {
@@ -4025,6 +4162,10 @@ class MainActivity : AppCompatActivity() {
                         imageSession.remove(
                             image.id
                         )
+                        image.persistedAttachmentId
+                            ?.let(
+                                chatStore::deleteAttachment
+                            )
                     }
                     .show()
             }
@@ -4032,6 +4173,10 @@ class MainActivity : AppCompatActivity() {
                 "پاک کردن همه"
             ) { _, _ ->
                 imageSession.clear()
+                chatStore.deleteAttachments(
+                    currentChatId,
+                    "image"
+                )
             }
             .setPositiveButton(
                 "بستن",
@@ -4064,7 +4209,33 @@ class MainActivity : AppCompatActivity() {
                 val parsed = withContext(Dispatchers.IO) {
                     documentPipeline.parse(uri)
                 }
-                val sessionDocument = attachmentSession.add(parsed)
+                val persistent =
+                    persistReadAccess(uri)
+                val storedId =
+                    if (persistent) {
+                        chatStore.addAttachment(
+                            chatId = currentChatId,
+                            kind = "document",
+                            displayName = parsed.name,
+                            mimeType = parsed.mimeType,
+                            storageUri = uri.toString(),
+                            sizeBytes = queryUriSize(uri)
+                        )
+                    } else {
+                        null
+                    }
+                val sessionDocument =
+                    attachmentSession.add(
+                        parsed,
+                        persistedAttachmentId =
+                            storedId,
+                        storageUri =
+                            if (persistent) {
+                                uri.toString()
+                            } else {
+                                null
+                            }
+                    )
                 appendChat(
                     "PRIME",
                     "فایل «" + sessionDocument.name + "» آماده است؛ " +
@@ -4117,12 +4288,23 @@ class MainActivity : AppCompatActivity() {
                     )
                     .setPositiveButton("بستن", null)
                     .setNegativeButton("حذف از چت") { _, _ ->
-                        attachmentSession.remove(sessionDocument.id)
+                        attachmentSession.remove(
+                            sessionDocument.id
+                        )
+                        sessionDocument
+                            .persistedAttachmentId
+                            ?.let(
+                                chatStore::deleteAttachment
+                            )
                     }
                     .show()
             }
             .setNegativeButton("پاک کردن همه") { _, _ ->
                 attachmentSession.clear()
+                chatStore.deleteAttachments(
+                    currentChatId,
+                    "document"
+                )
             }
             .setPositiveButton("بستن", null)
             .show()
