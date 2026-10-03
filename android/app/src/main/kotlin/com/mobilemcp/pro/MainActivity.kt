@@ -75,6 +75,12 @@ class MainActivity : AppCompatActivity() {
     private val mcpDiscoveryCache =
         mutableMapOf<String, PrimeMcpDiscovery>()
     private val attachmentSession = PrimeAttachmentSession()
+    private val imageSession = PrimeImageSession()
+    private val imageLoader by lazy {
+        PrimeImageLoader(
+            applicationContext
+        )
+    }
     private val documentPipeline by lazy {
         PrimeDocumentPipeline(applicationContext)
     }
@@ -83,6 +89,17 @@ class MainActivity : AppCompatActivity() {
     ) { uri ->
         if (uri != null) ingestAttachment(uri)
     }
+    private val imagePicker =
+        registerForActivityResult(
+            ActivityResultContracts
+                .OpenMultipleDocuments()
+        ) { uris ->
+            if (uris.isNotEmpty()) {
+                ingestImages(
+                    uris.take(4)
+                )
+            }
+        }
     private lateinit var bridgeSecurity: DeviceBridgeSecurity
     private lateinit var remoteBridgeSecurity: RemoteBridgeSecurity
     private var bridgeAuthToken: String = ""
@@ -126,7 +143,8 @@ class MainActivity : AppCompatActivity() {
             authManager,
             memoryStore,
             attachmentSession,
-            mcpToolSource
+            mcpToolSource,
+            imageSession
         )
         chatStore = PrimeChatStore(applicationContext)
         bridgeSecurity = DeviceBridgeSecurity(SecureStore(applicationContext))
@@ -499,6 +517,7 @@ class MainActivity : AppCompatActivity() {
 
         pendingConfirmationTask = null
         attachmentSession.clear()
+        imageSession.clear()
         binding.chatMessages.removeAllViews()
         binding.etMessage.setText("")
         binding.tvAgentStatus.text = "آماده"
@@ -1559,6 +1578,8 @@ class MainActivity : AppCompatActivity() {
             "حافظهٔ PRIME",
             "افزودن فایل",
             "فایل‌های این چت",
+            "افزودن تصویر",
+            "تصاویر این چت",
             "MCP Servers"
         )
 
@@ -1579,7 +1600,9 @@ class MainActivity : AppCompatActivity() {
                     4 -> showMemoryManager()
                     5 -> pickDocument()
                     6 -> showAttachmentManager()
-                    7 -> showMcpServers()
+                    7 -> pickImages()
+                    8 -> showImageManager()
+                    9 -> showMcpServers()
                 }
             }
             .show()
@@ -1993,6 +2016,172 @@ class MainActivity : AppCompatActivity() {
                 setBusy(false)
             }
         }
+    }
+
+    private fun pickImages() {
+        if (isBusy) return
+        imagePicker.launch(
+            arrayOf(
+                "image/png",
+                "image/jpeg",
+                "image/webp"
+            )
+        )
+    }
+
+    private fun ingestImages(
+        uris: List<Uri>
+    ) {
+        if (isBusy) return
+        setBusy(
+            true,
+            "در حال آماده‌سازی تصویر…"
+        )
+
+        appScope.launch {
+            var added = 0
+            val failures =
+                mutableListOf<String>()
+
+            try {
+                uris.forEach { uri ->
+                    try {
+                        val pair =
+                            withContext(
+                                Dispatchers.IO
+                            ) {
+                                imageLoader.load(
+                                    uri
+                                )
+                            }
+                        imageSession.add(
+                            pair.first,
+                            pair.second
+                        )
+                        added += 1
+                    } catch (e: Exception) {
+                        failures +=
+                            (
+                                e.message
+                                    ?: "تصویر قابل پردازش نیست."
+                            ).take(180)
+                    }
+                }
+
+                val summary =
+                    buildString {
+                        append(added)
+                        append(
+                            " تصویر آمادهٔ تحلیل است."
+                        )
+                        if (
+                            failures.isNotEmpty()
+                        ) {
+                            appendLine()
+                            failures.forEach {
+                                appendLine(
+                                    "• " + it
+                                )
+                            }
+                        }
+                        if (added > 0) {
+                            appendLine()
+                            append(
+                                "حالا بگو «این تصویر را توضیح بده» یا دربارهٔ آن سؤال بپرس."
+                            )
+                        }
+                    }.trim()
+
+                appendChat(
+                    "PRIME",
+                    summary,
+                    persist = false
+                )
+            } finally {
+                setBusy(false)
+            }
+        }
+    }
+
+    private fun showImageManager() {
+        val images =
+            imageSession.list()
+        if (images.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(
+                    "تصاویر این چت"
+                )
+                .setMessage(
+                    "هنوز تصویری اضافه نشده."
+                )
+                .setPositiveButton(
+                    "افزودن تصویر"
+                ) { _, _ ->
+                    pickImages()
+                }
+                .setNegativeButton(
+                    "بستن",
+                    null
+                )
+                .show()
+            return
+        }
+
+        val labels =
+            images.map {
+                image ->
+                image.input.name +
+                    " · " +
+                    (
+                        image.byteSize /
+                            1024
+                    ) +
+                    " KiB"
+            }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle(
+                "تصاویر این چت"
+            )
+            .setItems(
+                labels
+            ) { _, which ->
+                val image =
+                    images[which]
+                AlertDialog.Builder(this)
+                    .setTitle(
+                        image.input.name
+                    )
+                    .setMessage(
+                        "نوع: " +
+                            image.input.mimeType +
+                            "\nحجم: " +
+                            image.byteSize +
+                            " bytes"
+                    )
+                    .setPositiveButton(
+                        "بستن",
+                        null
+                    )
+                    .setNegativeButton(
+                        "حذف"
+                    ) { _, _ ->
+                        imageSession.remove(
+                            image.id
+                        )
+                    }
+                    .show()
+            }
+            .setNeutralButton(
+                "پاک کردن همه"
+            ) { _, _ ->
+                imageSession.clear()
+            }
+            .setPositiveButton(
+                "بستن",
+                null
+            )
+            .show()
     }
 
     private fun pickDocument() {
