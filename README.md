@@ -4,6 +4,8 @@
 
 PRIME is the assistant identity. **P6** is the PRIME product-model identity shown to the user. AI inference is performed by an eligible model made available through the user's authorized ChatGPT plan.
 
+- CI validates Android unit tests, lint, debug/release APKs, API 34 device instrumentation, real APK installation and MainActivity launch smoke before an installable artifact is published.
+
 ## What PRIME P6 does
 
 - Chat directly inside the Android app with live streamed text and user-controlled Stop generation
