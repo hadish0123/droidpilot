@@ -712,15 +712,20 @@ class PrimeTaskWorker(
         }
 
         val provider =
-            OpenAIResponsesProvider(
-                object :
-                    PrimeCredentials {
-                    override fun isSignedIn() =
-                        auth.isSignedIn()
+            PrimeObservedProvider(
+                OpenAIResponsesProvider(
+                    object :
+                        PrimeCredentials {
+                        override fun isSignedIn() =
+                            auth.isSignedIn()
 
-                    override suspend fun accessToken() =
-                        auth.accessToken()
-                }
+                        override suspend fun accessToken() =
+                            auth.accessToken()
+                    }
+                ),
+                PrimeObservabilityStore(
+                    applicationContext
+                )
             )
         val models =
             provider.listModels()
