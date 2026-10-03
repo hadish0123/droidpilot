@@ -10,6 +10,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 - Fresh-information queries can use the Responses API hosted web search tool with visible source URLs
 - Explicit long-term memory for facts, preferences and projects, encrypted locally with Android Keystore
 - Session attachments with local text extraction for PDF, TXT/MD, CSV, JSON, DOCX, XLSX and PPTX
+- Session image attachments (PNG/JPEG/WEBP) with Responses API vision analysis
 - Android-side multi-server MCP client with encrypted server/token storage and 2026/2025 protocol negotiation
 - Discovered MCP tools can enter PRIME's agent loop through a namespaced, risk-gated external tool runtime
 - Voice command → Android speech recognition → PRIME
@@ -37,6 +38,7 @@ PRIME is designed local-first:
 - Phone actions execute locally on the Android device.
 - Attached documents are parsed locally. Extracted attachment text is kept only in the active in-memory chat session, and only relevant excerpts are sent with a model request.
 - Web search is opt-in by request intent: ordinary stable questions do not invoke hosted search. Search answers surface source URLs in the chat UI.
+- Images remain in the active in-memory chat session and are sent to the provider only for a visual-analysis request. Visible instructions inside images are explicitly treated as untrusted data.
 - The optional Device Bridge is off until the user starts it.
 - MCP server URLs and bearer tokens configured inside PRIME are encrypted with Android Keystore. Remote MCP endpoints must use HTTPS; cleartext is restricted to loopback localhost.
 - Device Bridge commands require a per-install 256-bit bearer token stored through Android Keystore.
