@@ -25,6 +25,16 @@ internal data class AiTextRequest(
     val messages: List<AiMessage>
 )
 
+internal data class AiWebCitation(
+    val url: String,
+    val title: String?
+)
+
+internal data class AiWebResult(
+    val text: String,
+    val citations: List<AiWebCitation>
+)
+
 /**
  * Boundary between PRIME orchestration and any model backend.
  *
@@ -43,6 +53,17 @@ internal interface AiProvider {
         request: AiTextRequest,
         onTextDelta: ((String) -> Unit)? = null
     ): String
+
+    val supportsWebSearch: Boolean
+        get() = false
+
+    suspend fun searchWeb(
+        request: AiTextRequest
+    ): AiWebResult {
+        throw UnsupportedOperationException(
+            "Web search is not supported by this provider"
+        )
+    }
 
     fun reset() = Unit
 }
