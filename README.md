@@ -7,6 +7,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 ## What PRIME P6 does
 
 - Chat directly inside the Android app with live streamed text and user-controlled Stop generation
+- Fresh-information queries can use the Responses API hosted web search tool with visible source URLs
 - Explicit long-term memory for facts, preferences and projects, encrypted locally with Android Keystore
 - Session attachments with local text extraction for PDF, TXT/MD, CSV, JSON, DOCX, XLSX and PPTX
 - Android-side multi-server MCP client with encrypted server/token storage and 2026/2025 protocol negotiation
@@ -35,6 +36,7 @@ PRIME is designed local-first:
 - Access and refresh tokens are never written to source code or app logs.
 - Phone actions execute locally on the Android device.
 - Attached documents are parsed locally. Extracted attachment text is kept only in the active in-memory chat session, and only relevant excerpts are sent with a model request.
+- Web search is opt-in by request intent: ordinary stable questions do not invoke hosted search. Search answers surface source URLs in the chat UI.
 - The optional Device Bridge is off until the user starts it.
 - MCP server URLs and bearer tokens configured inside PRIME are encrypted with Android Keystore. Remote MCP endpoints must use HTTPS; cleartext is restricted to loopback localhost.
 - Device Bridge commands require a per-install 256-bit bearer token stored through Android Keystore.
