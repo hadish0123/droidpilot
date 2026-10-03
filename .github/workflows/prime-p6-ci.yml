@@ -59,6 +59,7 @@ jobs:
             android/app/build/reports/tests/
             android/app/build/reports/lint-results-debug.html
             android/app/build/reports/lint-results-release.html
+            android/app/build/reports/lint-results-release.html
 
   mcp:
     name: MCP bridge
