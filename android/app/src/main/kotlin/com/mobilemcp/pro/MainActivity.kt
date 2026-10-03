@@ -70,6 +70,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var chatStore: PrimeChatStore
     private lateinit var memoryStore: PrimeMemoryStore
     private lateinit var mcpServerStore: PrimeMcpServerStore
+    private lateinit var pluginManager: PrimePluginManager
+    private lateinit var pluginManifestLoader: PrimePluginManifestLoader
     private lateinit var mcpClient: PrimeMcpClient
     private lateinit var mcpToolSource: PrimeMcpToolSource
     private val mcpDiscoveryCache =
@@ -97,6 +99,17 @@ class MainActivity : AppCompatActivity() {
             if (uris.isNotEmpty()) {
                 ingestImages(
                     uris.take(4)
+                )
+            }
+        }
+    private val pluginManifestPicker =
+        registerForActivityResult(
+            ActivityResultContracts
+                .OpenDocument()
+        ) { uri ->
+            if (uri != null) {
+                ingestPluginManifest(
+                    uri
                 )
             }
         }
@@ -132,6 +145,14 @@ class MainActivity : AppCompatActivity() {
         authManager = OpenAIAuthManager(applicationContext)
         memoryStore = PrimeMemoryStore(applicationContext)
         mcpServerStore = PrimeMcpServerStore(applicationContext)
+        pluginManager = PrimePluginManager(
+            context = applicationContext,
+            mcpStore = mcpServerStore
+        )
+        pluginManifestLoader =
+            PrimePluginManifestLoader(
+                applicationContext
+            )
         mcpClient = PrimeMcpClient(
             clientVersion = appVersionName()
         )
@@ -1580,6 +1601,7 @@ class MainActivity : AppCompatActivity() {
             "فایل‌های این چت",
             "افزودن تصویر",
             "تصاویر این چت",
+            "Plugins",
             "MCP Servers"
         )
 
@@ -1602,9 +1624,407 @@ class MainActivity : AppCompatActivity() {
                     6 -> showAttachmentManager()
                     7 -> pickImages()
                     8 -> showImageManager()
-                    9 -> showMcpServers()
+                    9 -> showPlugins()
+                    10 -> showMcpServers()
                 }
             }
+            .show()
+    }
+
+    private fun showPlugins() {
+        val plugins =
+            pluginManager.list()
+
+        if (plugins.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("Plugins")
+                .setMessage(
+                    "Pluginهای PRIME از manifest نسخه prime.plugin.v1 نصب می‌شوند و runtime آن‌ها MCP است."
+                )
+                .setPositiveButton(
+                    "نصب Plugin"
+                ) { _, _ ->
+                    pickPluginManifest()
+                }
+                .setNegativeButton(
+                    "بستن",
+                    null
+                )
+                .show()
+            return
+        }
+
+        val labels =
+            plugins.map { record ->
+                record.manifest.name +
+                    " · v" +
+                    record.manifest.version +
+                    " · " +
+                    (
+                        if (
+                            record.enabled
+                        ) {
+                            "فعال"
+                        } else {
+                            "خاموش"
+                        }
+                    )
+            }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("Plugins")
+            .setItems(labels) {
+                _,
+                which ->
+                showPluginDetails(
+                    plugins[which]
+                )
+            }
+            .setPositiveButton(
+                "نصب"
+            ) { _, _ ->
+                pickPluginManifest()
+            }
+            .setNegativeButton(
+                "بستن",
+                null
+            )
+            .show()
+    }
+
+    private fun pickPluginManifest() {
+        if (isBusy) return
+        pluginManifestPicker.launch(
+            arrayOf(
+                "application/json",
+                "text/plain",
+                "application/octet-stream"
+            )
+        )
+    }
+
+    private fun ingestPluginManifest(
+        uri: Uri
+    ) {
+        if (isBusy) return
+        setBusy(
+            true,
+            "در حال بررسی Plugin…"
+        )
+
+        appScope.launch {
+            try {
+                val manifest =
+                    withContext(
+                        Dispatchers.IO
+                    ) {
+                        PrimePluginManifestParser
+                            .parse(
+                                pluginManifestLoader
+                                    .load(uri)
+                            )
+                    }
+                setBusy(false)
+                showPluginInstallDialog(
+                    manifest
+                )
+            } catch (e: Exception) {
+                appendChat(
+                    "PRIME",
+                    "Plugin نصب نشد: " +
+                        (
+                            e.message
+                                ?: "manifest نامعتبر"
+                            ).take(500),
+                    persist = false
+                )
+                setBusy(false)
+            }
+        }
+    }
+
+    private fun showPluginInstallDialog(
+        manifest: PrimePluginManifest
+    ) {
+        val panel =
+            LinearLayout(this).apply {
+                orientation =
+                    LinearLayout.VERTICAL
+                setPadding(
+                    dp(24),
+                    dp(8),
+                    dp(24),
+                    dp(4)
+                )
+            }
+
+        val summary =
+            TextView(this).apply {
+                text = buildString {
+                    appendLine(
+                        manifest.name +
+                            " · v" +
+                            manifest.version
+                    )
+                    manifest.description
+                        ?.let {
+                            appendLine(it)
+                        }
+                    appendLine()
+                    appendLine(
+                        "Runtime: MCP"
+                    )
+                    appendLine(
+                        manifest.mcpUrl
+                    )
+                    append(
+                        "Capabilities: "
+                    )
+                    append(
+                        manifest
+                            .capabilities
+                            .joinToString(
+                                ", "
+                            ) {
+                                it.name
+                                    .lowercase()
+                            }
+                    )
+                }
+                setTextColor(
+                    ContextCompat
+                        .getColor(
+                            this@MainActivity,
+                            R.color
+                                .text_primary
+                        )
+                )
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(12)
+                )
+            }
+
+        val token =
+            android.widget.EditText(
+                this
+            ).apply {
+                hint =
+                    "Bearer token (اختیاری؛ secret داخل manifest قرار نده)"
+                inputType =
+                    android.text.InputType
+                        .TYPE_CLASS_TEXT or
+                        android.text.InputType
+                            .TYPE_TEXT_VARIATION_PASSWORD
+                maxLines = 1
+            }
+
+        panel.addView(summary)
+        panel.addView(token)
+
+        AlertDialog.Builder(this)
+            .setTitle(
+                "نصب Plugin"
+            )
+            .setView(panel)
+            .setPositiveButton(
+                "نصب و تست"
+            ) { _, _ ->
+                try {
+                    val record =
+                        pluginManager
+                            .install(
+                                manifest =
+                                    manifest,
+                                bearerToken =
+                                    token.text
+                                        ?.toString()
+                            )
+                    val server =
+                        pluginManager
+                            .serverFor(
+                                record
+                            )
+                    if (
+                        server != null &&
+                        server.enabled
+                    ) {
+                        discoverMcpServer(
+                            server
+                        )
+                    }
+                } catch (
+                    e: Exception
+                ) {
+                    appendChat(
+                        "PRIME",
+                        "Plugin نصب نشد: " +
+                            (
+                                e.message
+                                    ?: "خطای نصب"
+                                ).take(
+                                    500
+                                ),
+                        persist = false
+                    )
+                }
+            }
+            .setNegativeButton(
+                "لغو",
+                null
+            )
+            .show()
+    }
+
+    private fun showPluginDetails(
+        record: PrimePluginRecord
+    ) {
+        val manifest =
+            record.manifest
+        val details =
+            buildString {
+                appendLine(
+                    manifest.id
+                )
+                appendLine(
+                    "Version: " +
+                        manifest.version
+                )
+                manifest.description
+                    ?.let {
+                        appendLine()
+                        appendLine(it)
+                    }
+                appendLine()
+                appendLine(
+                    manifest.mcpUrl
+                )
+                append(
+                    "Capabilities: "
+                )
+                append(
+                    manifest
+                        .capabilities
+                        .joinToString(
+                            ", "
+                        ) {
+                            it.name
+                                .lowercase()
+                        }
+                )
+            }.trim()
+
+        AlertDialog.Builder(this)
+            .setTitle(
+                manifest.name
+            )
+            .setMessage(details)
+            .setPositiveButton(
+                "Test / Refresh"
+            ) { _, _ ->
+                pluginManager
+                    .serverFor(record)
+                    ?.let {
+                        discoverMcpServer(
+                            it
+                        )
+                    }
+            }
+            .setNeutralButton(
+                if (
+                    record.enabled
+                ) {
+                    "غیرفعال"
+                } else {
+                    "فعال"
+                }
+            ) { _, _ ->
+                val updated =
+                    pluginManager
+                        .setEnabled(
+                            manifest.id,
+                            !record.enabled
+                        )
+                if (
+                    updated != null
+                ) {
+                    if (
+                        updated.enabled
+                    ) {
+                        pluginManager
+                            .serverFor(
+                                updated
+                            )
+                            ?.let {
+                                discoverMcpServer(
+                                    it
+                                )
+                            }
+                    } else {
+                        mcpDiscoveryCache
+                            .remove(
+                                record.mcpServerId
+                            )
+                        mcpToolSource
+                            .removeServer(
+                                record.mcpServerId
+                            )
+                    }
+                }
+            }
+            .setNegativeButton(
+                "حذف"
+            ) { _, _ ->
+                confirmUninstallPlugin(
+                    record
+                )
+            }
+            .show()
+    }
+
+    private fun confirmUninstallPlugin(
+        record: PrimePluginRecord
+    ) {
+        AlertDialog.Builder(this)
+            .setTitle(
+                "حذف Plugin؟"
+            )
+            .setMessage(
+                record.manifest.name +
+                    "\n" +
+                    record.manifest.id
+            )
+            .setPositiveButton(
+                "حذف"
+            ) { _, _ ->
+                val removed =
+                    pluginManager
+                        .uninstall(
+                            record
+                                .manifest
+                                .id
+                        )
+                if (
+                    removed != null
+                ) {
+                    mcpDiscoveryCache
+                        .remove(
+                            removed
+                                .mcpServerId
+                        )
+                    mcpToolSource
+                        .removeServer(
+                            removed
+                                .mcpServerId
+                        )
+                }
+            }
+            .setNegativeButton(
+                "لغو",
+                null
+            )
             .show()
     }
 
