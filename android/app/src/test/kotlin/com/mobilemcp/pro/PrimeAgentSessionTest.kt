@@ -694,7 +694,7 @@ class PrimeAgentSessionTest {
             provider = provider,
             externalToolSource = external
         ).run(
-            userText = "از CRM پیام بفرست",
+            userText = "Use the connected CRM MCP function for this request.",
             confirmedForTask = false,
             uiProvider = {
                 error(
