@@ -678,28 +678,9 @@ class MainActivity : AppCompatActivity() {
     private fun branchThroughMessage(
         message: PrimeStoredMessage
     ) {
-        val next = chatStore.messages(message.chatId)
-            .firstOrNull { it.id > message.id }
-        val branchId = if (next == null) {
-            val source = chatStore.chat(message.chatId) ?: return
-            val id = chatStore.createChat((source.title + " · branch").take(80))
-            chatStore.messages(message.chatId)
-                .filter { it.id <= message.id }
-                .forEach { old ->
-                    chatStore.appendMessage(
-                        id,
-                        old.role,
-                        old.content,
-                        old.status,
-                        null,
-                        old.metadataJson
-                    )
-                }
-            id
-        } else {
-            chatStore.forkBeforeMessage(next.id)
-        }
-
+        val branchId = chatStore.forkThroughMessage(
+            message.id
+        )
         loadChat(branchId, showGreetingWhenEmpty = false)
         renderChatHistory()
         Toast.makeText(
