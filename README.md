@@ -284,4 +284,6 @@ See `NOTICE.md` for attribution.
 
 - Chat message history supports long-press copy, non-destructive edit-and-branch, regenerate-in-branch, and explicit conversation branching while preserving the original thread.
 
-- API 34 Android instrumentation CI validates real SQLite attachment durability and Android Keystore encryption on an emulator
+- API 34 Android instrumentation CI validates SQLite persistence and Android Keystore encryption on an emulator.
+
+- Portable bounded JSON chat backup/restore excludes credentials, memories, tool logs and attachment URIs.

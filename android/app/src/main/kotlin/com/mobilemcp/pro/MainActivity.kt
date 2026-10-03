@@ -119,6 +119,26 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         }
+    private val chatBackupExportPicker =
+        registerForActivityResult(
+            ActivityResultContracts
+                .CreateDocument(
+                    "application/json"
+                )
+        ) { uri ->
+            if (uri != null) {
+                exportChatBackup(uri)
+            }
+        }
+    private val chatBackupImportPicker =
+        registerForActivityResult(
+            ActivityResultContracts
+                .OpenDocument()
+        ) { uri ->
+            if (uri != null) {
+                importChatBackup(uri)
+            }
+        }
     private lateinit var bridgeSecurity: DeviceBridgeSecurity
     private lateinit var remoteBridgeSecurity: RemoteBridgeSecurity
     private var bridgeAuthToken: String = ""
@@ -1165,6 +1185,229 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun showChatBackupActions() {
+        AlertDialog.Builder(this)
+            .setTitle(
+                "پشتیبان گفتگوها"
+            )
+            .setMessage(
+                "Backup فقط عنوان، pin/archive و پیام‌های user/assistant را شامل می‌شود. Token، API key، Memory، Tool log و URI پیوست‌ها صادر نمی‌شوند."
+            )
+            .setItems(
+                arrayOf(
+                    "Export JSON backup",
+                    "Import JSON backup"
+                )
+            ) { _, which ->
+                when (which) {
+                    0 -> {
+                        val name =
+                            "PRIME-chat-backup-" +
+                                SimpleDateFormat(
+                                    "yyyyMMdd-HHmm",
+                                    Locale.US
+                                ).format(
+                                    Date()
+                                ) +
+                                ".json"
+                        chatBackupExportPicker
+                            .launch(name)
+                    }
+
+                    1 ->
+                        chatBackupImportPicker
+                            .launch(
+                                arrayOf(
+                                    "application/json",
+                                    "text/json",
+                                    "text/plain"
+                                )
+                            )
+                }
+            }
+            .setPositiveButton(
+                "بستن",
+                null
+            )
+            .show()
+    }
+
+    private fun exportChatBackup(
+        uri: Uri
+    ) {
+        if (isBusy) return
+        setBusy(
+            true,
+            "در حال ساخت backup…"
+        )
+
+        appScope.launch {
+            try {
+                val result =
+                    withContext(
+                        Dispatchers.IO
+                    ) {
+                        val backup =
+                            PrimeChatBackupCodec
+                                .capture(
+                                    chatStore
+                                )
+                        val payload =
+                            PrimeChatBackupCodec
+                                .encode(
+                                    backup
+                                )
+                        require(
+                            payload.length <=
+                                PrimeChatBackupCodec
+                                    .MAX_JSON_CHARS
+                        ) {
+                            "Backup از سقف حجم PRIME بزرگ‌تر است."
+                        }
+
+                        val output =
+                            contentResolver
+                                .openOutputStream(
+                                    uri,
+                                    "w"
+                                )
+                                ?: throw IllegalStateException(
+                                    "فایل خروجی قابل نوشتن نیست."
+                                )
+                        output.bufferedWriter(
+                            Charsets.UTF_8
+                        ).use {
+                            writer ->
+                            writer.write(
+                                payload
+                            )
+                        }
+
+                        backup.chats.size to
+                            backup.chats
+                                .sumOf {
+                                    it.messages.size
+                                }
+                    }
+
+                appendChat(
+                    "PRIME",
+                    "Backup ساخته شد: " +
+                        result.first +
+                        " گفتگو و " +
+                        result.second +
+                        " پیام. اطلاعات ورود، کلیدها و پیوست‌ها در فایل نیستند.",
+                    persist = false
+                )
+            } catch (e: Exception) {
+                appendChat(
+                    "PRIME",
+                    "Export backup انجام نشد: " +
+                        (
+                            e.message
+                                ?: "خطای نامشخص"
+                            ).take(300),
+                    persist = false
+                )
+            } finally {
+                setBusy(false)
+            }
+        }
+    }
+
+    private fun importChatBackup(
+        uri: Uri
+    ) {
+        if (isBusy) return
+        setBusy(
+            true,
+            "در حال بررسی backup…"
+        )
+
+        appScope.launch {
+            try {
+                val restored =
+                    withContext(
+                        Dispatchers.IO
+                    ) {
+                        val raw =
+                            readBoundedBackup(
+                                uri
+                            )
+                        val backup =
+                            PrimeChatBackupCodec
+                                .decode(raw)
+                        PrimeChatBackupCodec
+                            .restore(
+                                chatStore,
+                                backup
+                            )
+                    }
+
+                renderChatHistory()
+                appendChat(
+                    "PRIME",
+                    restored.size.toString() +
+                        " گفتگو از backup وارد شد. Backup خارجی فقط به‌عنوان تاریخچهٔ user/assistant پذیرفته می‌شود و نقش system/developer قابل import نیست.",
+                    persist = false
+                )
+            } catch (e: Exception) {
+                appendChat(
+                    "PRIME",
+                    "Import backup انجام نشد: " +
+                        (
+                            e.message
+                                ?: "فایل backup معتبر نیست."
+                            ).take(300),
+                    persist = false
+                )
+            } finally {
+                setBusy(false)
+            }
+        }
+    }
+
+    private fun readBoundedBackup(
+        uri: Uri
+    ): String {
+        val input =
+            contentResolver
+                .openInputStream(uri)
+                ?: throw IllegalStateException(
+                    "فایل backup قابل خواندن نیست."
+                )
+
+        return input.bufferedReader(
+            Charsets.UTF_8
+        ).use { reader ->
+            val result =
+                StringBuilder()
+            val buffer =
+                CharArray(8_192)
+
+            while (true) {
+                val count =
+                    reader.read(buffer)
+                if (count < 0) break
+                if (
+                    result.length + count >
+                    PrimeChatBackupCodec
+                        .MAX_JSON_CHARS
+                ) {
+                    throw IllegalArgumentException(
+                        "Backup از سقف 8 MiB PRIME بزرگ‌تر است."
+                    )
+                }
+                result.append(
+                    buffer,
+                    0,
+                    count
+                )
+            }
+            result.toString()
+        }
+    }
+
     private fun shareChat(
         chatId: Long
     ) {
@@ -2151,7 +2394,8 @@ class MainActivity : AppCompatActivity() {
             "AI Providers",
             "Developer / Usage",
             "Plugins",
-            "MCP Servers"
+            "MCP Servers",
+            "پشتیبان / بازیابی گفتگوها"
         )
 
         AlertDialog.Builder(this)
@@ -2180,6 +2424,7 @@ class MainActivity : AppCompatActivity() {
                     13 -> showDeveloperUsage()
                     14 -> showPlugins()
                     15 -> showMcpServers()
+                    16 -> showChatBackupActions()
                 }
             }
             .show()
