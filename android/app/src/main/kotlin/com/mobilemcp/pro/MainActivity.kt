@@ -28,6 +28,7 @@ import android.view.inputmethod.EditorInfo
 import com.mobilemcp.pro.voice.PersianSpeech
 import com.mobilemcp.pro.voice.PersianVoicePack
 import com.mobilemcp.pro.voice.VoicePreferences
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -66,6 +67,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var primeAgent: PrimeAgent
     private lateinit var chatStore: PrimeChatStore
     private lateinit var memoryStore: PrimeMemoryStore
+    private val attachmentSession = PrimeAttachmentSession()
+    private val documentPipeline by lazy {
+        PrimeDocumentPipeline(applicationContext)
+    }
+    private val filePicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) ingestAttachment(uri)
+    }
     private lateinit var bridgeSecurity: DeviceBridgeSecurity
     private lateinit var remoteBridgeSecurity: RemoteBridgeSecurity
     private var bridgeAuthToken: String = ""
@@ -97,7 +107,11 @@ class MainActivity : AppCompatActivity() {
 
         authManager = OpenAIAuthManager(applicationContext)
         memoryStore = PrimeMemoryStore(applicationContext)
-        primeAgent = PrimeAgent(authManager, memoryStore)
+        primeAgent = PrimeAgent(
+            authManager,
+            memoryStore,
+            attachmentSession
+        )
         chatStore = PrimeChatStore(applicationContext)
         bridgeSecurity = DeviceBridgeSecurity(SecureStore(applicationContext))
         bridgeAuthToken = bridgeSecurity.getOrCreateToken()
@@ -467,6 +481,7 @@ class MainActivity : AppCompatActivity() {
             .apply()
 
         pendingConfirmationTask = null
+        attachmentSession.clear()
         binding.chatMessages.removeAllViews()
         binding.etMessage.setText("")
         binding.tvAgentStatus.text = "آماده"
@@ -1517,7 +1532,9 @@ class MainActivity : AppCompatActivity() {
             "کنترل گوشی",
             "تنظیمات گوشی",
             "پل اتصال دستگاه",
-            "حافظهٔ PRIME"
+            "حافظهٔ PRIME",
+            "افزودن فایل",
+            "فایل‌های این چت"
         )
 
         AlertDialog.Builder(this)
@@ -1535,8 +1552,98 @@ class MainActivity : AppCompatActivity() {
                     2 -> startActivity(Intent(Settings.ACTION_SETTINGS))
                     3 -> binding.drawerLayout.openDrawer(Gravity.RIGHT)
                     4 -> showMemoryManager()
+                    5 -> pickDocument()
+                    6 -> showAttachmentManager()
                 }
             }
+            .show()
+    }
+
+    private fun pickDocument() {
+        if (isBusy) return
+        filePicker.launch(
+            arrayOf(
+                "application/pdf",
+                "text/*",
+                "application/json",
+                "text/csv",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            )
+        )
+    }
+
+    private fun ingestAttachment(uri: Uri) {
+        if (isBusy) return
+        setBusy(true, "در حال خواندن فایل…")
+
+        appScope.launch {
+            try {
+                val parsed = withContext(Dispatchers.IO) {
+                    documentPipeline.parse(uri)
+                }
+                val sessionDocument = attachmentSession.add(parsed)
+                appendChat(
+                    "PRIME",
+                    "فایل «" + sessionDocument.name + "» آماده است؛ " +
+                        sessionDocument.chunkCount + " بخش متنی استخراج شد. " +
+                        "حالا دربارهٔ فایل سؤال بپرس یا درخواست خلاصه بده.",
+                    persist = false
+                )
+            } catch (e: Exception) {
+                appendChat(
+                    "PRIME",
+                    e.message ?: "فایل قابل پردازش نیست.",
+                    persist = false
+                )
+            } finally {
+                setBusy(false)
+            }
+        }
+    }
+
+    private fun showAttachmentManager() {
+        val documents = attachmentSession.listDocuments()
+        if (documents.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("فایل‌های این چت")
+                .setMessage(
+                    "هنوز فایلی اضافه نشده. از دکمه + گزینهٔ «افزودن فایل» را بزن."
+                )
+                .setPositiveButton("باشه", null)
+                .show()
+            return
+        }
+
+        val labels = documents.map { sessionDocument ->
+            sessionDocument.name + " · " +
+                sessionDocument.chunkCount + " بخش"
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("فایل‌های این چت")
+            .setItems(labels) { _, which ->
+                val sessionDocument = documents[which]
+                AlertDialog.Builder(this)
+                    .setTitle(sessionDocument.name)
+                    .setMessage(
+                        "نوع: " + sessionDocument.kind + "\n" +
+                            "متن استخراج‌شده: " +
+                            sessionDocument.textChars + " نویسه\n" +
+                            "بخش‌ها: " +
+                            sessionDocument.chunkCount
+                    )
+                    .setPositiveButton("بستن", null)
+                    .setNegativeButton("حذف از چت") { _, _ ->
+                        attachmentSession.remove(sessionDocument.id)
+                    }
+                    .show()
+            }
+            .setNegativeButton("پاک کردن همه") { _, _ ->
+                attachmentSession.clear()
+            }
+            .setPositiveButton("بستن", null)
             .show()
     }
 
