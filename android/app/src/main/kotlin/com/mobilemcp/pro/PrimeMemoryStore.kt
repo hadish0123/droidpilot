@@ -40,7 +40,15 @@ internal class PrimeMemoryStore(
         val items = readAll().toMutableList()
 
         val existingIndex = items.indexOfFirst {
-            it.normalized == normalized
+            it.normalized == normalized ||
+                (
+                    it.kind == kind &&
+                        PrimeMemoryRanker
+                            .isNearDuplicate(
+                                it.normalized,
+                                normalized
+                            )
+                )
         }
 
         val item = if (existingIndex >= 0) {
@@ -84,7 +92,7 @@ internal class PrimeMemoryStore(
         PrimeMemoryRanker.rank(
             items = readAll(),
             query = query,
-            limit = limit.coerceIn(0, 12)
+            limit = limit.coerceIn(0, 8)
         )
 
     @Synchronized
@@ -98,17 +106,25 @@ internal class PrimeMemoryStore(
         val clean = PrimeMemoryText.normalize(query)
         if (clean.isBlank()) return 0
 
-        val queryTokens = PrimeMemoryText.tokens(clean)
         val items = readAll()
+        val rankedIds = PrimeMemoryRanker
+            .rankScored(
+                items = items,
+                query = clean,
+                limit = items.size
+            )
+            .filter {
+                it.score >= 7.0
+            }
+            .map {
+                it.item.id
+            }
+            .toSet()
+
         val retained = items.filterNot { item ->
             item.normalized.contains(clean) ||
                 clean.contains(item.normalized) ||
-                (
-                    queryTokens.isNotEmpty() &&
-                        queryTokens.intersect(
-                            PrimeMemoryText.tokens(item.normalized)
-                        ).size >= queryTokens.size.coerceAtMost(2)
-                )
+                item.id in rankedIds
         }
 
         val removed = items.size - retained.size
