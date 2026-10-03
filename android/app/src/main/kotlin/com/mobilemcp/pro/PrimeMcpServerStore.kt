@@ -3,7 +3,6 @@ package com.mobilemcp.pro
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.InetAddress
 import java.net.URI
 import java.util.UUID
 
@@ -72,17 +71,31 @@ internal object PrimeMcpEndpointValidator {
         val clean = host
             .removePrefix("[")
             .removeSuffix("]")
+            .lowercase()
 
         if (
-            clean.equals("localhost", ignoreCase = true) ||
-            clean.equals("ip6-localhost", ignoreCase = true)
+            clean == "localhost" ||
+            clean == "ip6-localhost" ||
+            clean == "::1"
         ) {
             return true
         }
 
-        return runCatching {
-            InetAddress.getByName(clean).isLoopbackAddress
-        }.getOrDefault(false)
+        val ipv4 = clean.split('.')
+        if (ipv4.size == 4) {
+            val octets = ipv4.map {
+                it.toIntOrNull()
+                    ?: return false
+            }
+            if (
+                octets.all { it in 0..255 } &&
+                octets.first() == 127
+            ) {
+                return true
+            }
+        }
+
+        return false
     }
 }
 
