@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.zip.ZipInputStream
