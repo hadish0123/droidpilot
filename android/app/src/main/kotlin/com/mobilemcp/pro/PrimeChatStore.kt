@@ -2,13 +2,17 @@ package com.mobilemcp.pro
 
 import android.content.ContentValues
 import android.content.Context
+import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.mobilemcp.pro.chat.PrimeChatSchema
 
 data class PrimeChatSummary(
     val id: Long,
     val title: String,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val isPinned: Boolean = false,
+    val isArchived: Boolean = false
 )
 
 data class PrimeStoredMessage(
@@ -16,26 +20,24 @@ data class PrimeStoredMessage(
     val chatId: Long,
     val role: String,
     val content: String,
-    val createdAt: Long
+    val createdAt: Long,
+    val status: String = "complete",
+    val parentMessageId: Long? = null,
+    val metadataJson: String? = null
 )
 
-/**
- * Local PRIME conversation memory.
- *
- * Chats stay on the device and survive app restarts/updates. OAuth tokens are
- * still handled separately by SecureStore; this database stores only chat
- * titles and message text.
- */
 class PrimeChatStore(context: Context) : SQLiteOpenHelper(
     context.applicationContext,
-    "prime_chats.db",
+    DATABASE_NAME,
     null,
-    1
+    PrimeChatSchema.VERSION
 ) {
-
     companion object {
+        private const val DATABASE_NAME = "prime_chats.db"
         private const val TABLE_CHATS = "chats"
         private const val TABLE_MESSAGES = "messages"
+        private const val TABLE_ATTACHMENTS = "attachments"
+        private const val TABLE_TOOL_CALLS = "tool_calls"
 
         const val PREFS = "prime_chat_state"
         const val ACTIVE_CHAT_ID = "active_chat_id"
@@ -53,11 +55,12 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0
             )
             """.trimIndent()
         )
-
         db.execSQL(
             """
             CREATE TABLE $TABLE_MESSAGES (
@@ -66,24 +69,89 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
-                FOREIGN KEY(chat_id) REFERENCES $TABLE_CHATS(id) ON DELETE CASCADE
+                status TEXT NOT NULL DEFAULT 'complete',
+                parent_message_id INTEGER,
+                metadata_json TEXT,
+                FOREIGN KEY(chat_id) REFERENCES $TABLE_CHATS(id) ON DELETE CASCADE,
+                FOREIGN KEY(parent_message_id) REFERENCES $TABLE_MESSAGES(id) ON DELETE SET NULL
             )
             """.trimIndent()
         )
-
         db.execSQL(
-            "CREATE INDEX idx_prime_messages_chat ON $TABLE_MESSAGES(chat_id, id)"
+            """
+            CREATE TABLE $TABLE_ATTACHMENTS (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER,
+                kind TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                mime_type TEXT,
+                storage_uri TEXT NOT NULL,
+                size_bytes INTEGER,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY(chat_id) REFERENCES $TABLE_CHATS(id) ON DELETE CASCADE,
+                FOREIGN KEY(message_id) REFERENCES $TABLE_MESSAGES(id) ON DELETE CASCADE
+            )
+            """.trimIndent()
         )
         db.execSQL(
-            "CREATE INDEX idx_prime_chats_updated ON $TABLE_CHATS(updated_at DESC)"
+            """
+            CREATE TABLE $TABLE_TOOL_CALLS (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER,
+                call_id TEXT,
+                tool_name TEXT NOT NULL,
+                risk TEXT NOT NULL,
+                status TEXT NOT NULL,
+                arguments_json TEXT NOT NULL,
+                result_json TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY(chat_id) REFERENCES $TABLE_CHATS(id) ON DELETE CASCADE,
+                FOREIGN KEY(message_id) REFERENCES $TABLE_MESSAGES(id) ON DELETE SET NULL
+            )
+            """.trimIndent()
         )
+        createIndexes(db)
     }
 
     override fun onUpgrade(
         db: SQLiteDatabase,
         oldVersion: Int,
         newVersion: Int
-    ) = Unit
+    ) {
+        if (oldVersion < 2 && newVersion >= 2) {
+            PrimeChatSchema.migration1To2.forEach(db::execSQL)
+        }
+    }
+
+    private fun createIndexes(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE INDEX idx_prime_messages_chat ON $TABLE_MESSAGES(chat_id, id)"
+        )
+        db.execSQL(
+            "CREATE INDEX idx_prime_chats_updated ON $TABLE_CHATS(updated_at DESC)"
+        )
+        db.execSQL(
+            "CREATE INDEX idx_prime_chats_pinned_updated ON $TABLE_CHATS(pinned DESC, archived ASC, updated_at DESC)"
+        )
+        db.execSQL(
+            "CREATE INDEX idx_prime_messages_parent ON $TABLE_MESSAGES(parent_message_id)"
+        )
+        db.execSQL(
+            "CREATE INDEX idx_prime_attachments_chat ON $TABLE_ATTACHMENTS(chat_id, id)"
+        )
+        db.execSQL(
+            "CREATE INDEX idx_prime_attachments_message ON $TABLE_ATTACHMENTS(message_id, id)"
+        )
+        db.execSQL(
+            "CREATE INDEX idx_prime_tool_calls_chat ON $TABLE_TOOL_CALLS(chat_id, id)"
+        )
+        db.execSQL(
+            "CREATE INDEX idx_prime_tool_calls_message ON $TABLE_TOOL_CALLS(message_id, id)"
+        )
+    }
 
     @Synchronized
     fun createChat(title: String = "New chat"): Long {
@@ -113,34 +181,73 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
     }
 
     @Synchronized
-    fun listChats(): List<PrimeChatSummary> {
+    fun chat(chatId: Long): PrimeChatSummary? {
+        readableDatabase.query(
+            TABLE_CHATS,
+            arrayOf("id", "title", "updated_at", "pinned", "archived"),
+            "id=?",
+            arrayOf(chatId.toString()),
+            null,
+            null,
+            null,
+            "1"
+        ).use { cursor ->
+            return if (cursor.moveToFirst()) {
+                chatSummary(cursor)
+            } else {
+                null
+            }
+        }
+    }
+
+    @Synchronized
+    fun listChats(includeArchived: Boolean = false): List<PrimeChatSummary> {
         val result = mutableListOf<PrimeChatSummary>()
         readableDatabase.query(
             TABLE_CHATS,
-            arrayOf("id", "title", "updated_at"),
+            arrayOf("id", "title", "updated_at", "pinned", "archived"),
+            if (includeArchived) null else "archived=0",
             null,
             null,
             null,
-            null,
-            "updated_at DESC, id DESC"
+            "pinned DESC, updated_at DESC, id DESC"
         ).use { cursor ->
             while (cursor.moveToNext()) {
-                result += PrimeChatSummary(
-                    id = cursor.getLong(0),
-                    title = cursor.getString(1),
-                    updatedAt = cursor.getLong(2)
-                )
+                result += chatSummary(cursor)
             }
         }
         return result
     }
 
     @Synchronized
+    fun archivedChats(): List<PrimeChatSummary> =
+        listChats(includeArchived = true)
+            .filter { it.isArchived }
+
+    private fun chatSummary(cursor: Cursor): PrimeChatSummary =
+        PrimeChatSummary(
+            id = cursor.getLong(0),
+            title = cursor.getString(1),
+            updatedAt = cursor.getLong(2),
+            isPinned = cursor.getInt(3) != 0,
+            isArchived = cursor.getInt(4) != 0
+        )
+
+    @Synchronized
     fun messages(chatId: Long): List<PrimeStoredMessage> {
         val result = mutableListOf<PrimeStoredMessage>()
         readableDatabase.query(
             TABLE_MESSAGES,
-            arrayOf("id", "chat_id", "role", "content", "created_at"),
+            arrayOf(
+                "id",
+                "chat_id",
+                "role",
+                "content",
+                "created_at",
+                "status",
+                "parent_message_id",
+                "metadata_json"
+            ),
             "chat_id=?",
             arrayOf(chatId.toString()),
             null,
@@ -148,29 +255,80 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
             "id ASC"
         ).use { cursor ->
             while (cursor.moveToNext()) {
-                result += PrimeStoredMessage(
-                    id = cursor.getLong(0),
-                    chatId = cursor.getLong(1),
-                    role = cursor.getString(2),
-                    content = cursor.getString(3),
-                    createdAt = cursor.getLong(4)
-                )
+                result += storedMessage(cursor)
             }
         }
         return result
     }
 
     @Synchronized
+    fun searchMessages(
+        query: String,
+        limit: Int = 50
+    ): List<PrimeStoredMessage> {
+        val clean = query.trim()
+        if (clean.isBlank()) return emptyList()
+
+        val boundedLimit = limit.coerceIn(1, 200)
+        val pattern = "%" + clean
+            .replace("\", "\\")
+            .replace("%", "\%")
+            .replace("_", "\_") + "%"
+
+        val result = mutableListOf<PrimeStoredMessage>()
+        readableDatabase.query(
+            TABLE_MESSAGES,
+            arrayOf(
+                "id",
+                "chat_id",
+                "role",
+                "content",
+                "created_at",
+                "status",
+                "parent_message_id",
+                "metadata_json"
+            ),
+            "content LIKE ? ESCAPE '\\'",
+            arrayOf(pattern),
+            null,
+            null,
+            "created_at DESC, id DESC",
+            boundedLimit.toString()
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += storedMessage(cursor)
+            }
+        }
+        return result
+    }
+
+    private fun storedMessage(cursor: Cursor): PrimeStoredMessage =
+        PrimeStoredMessage(
+            id = cursor.getLong(0),
+            chatId = cursor.getLong(1),
+            role = cursor.getString(2),
+            content = cursor.getString(3),
+            createdAt = cursor.getLong(4),
+            status = cursor.getString(5),
+            parentMessageId =
+                if (cursor.isNull(6)) null else cursor.getLong(6),
+            metadataJson =
+                if (cursor.isNull(7)) null else cursor.getString(7)
+        )
+
+    @Synchronized
     fun appendMessage(
         chatId: Long,
         role: String,
-        content: String
+        content: String,
+        status: String = "complete",
+        parentMessageId: Long? = null,
+        metadataJson: String? = null
     ): Long {
         if (content.isBlank()) return -1L
 
         val now = System.currentTimeMillis()
         val db = writableDatabase
-
         db.beginTransaction()
         try {
             val values = ContentValues().apply {
@@ -178,6 +336,17 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
                 put("role", role)
                 put("content", content.trim())
                 put("created_at", now)
+                put("status", status)
+                if (parentMessageId == null) {
+                    putNull("parent_message_id")
+                } else {
+                    put("parent_message_id", parentMessageId)
+                }
+                if (metadataJson == null) {
+                    putNull("metadata_json")
+                } else {
+                    put("metadata_json", metadataJson)
+                }
             }
 
             val messageId = db.insertOrThrow(
@@ -188,13 +357,20 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
 
             db.update(
                 TABLE_CHATS,
-                ContentValues().apply { put("updated_at", now) },
+                ContentValues().apply {
+                    put("updated_at", now)
+                },
                 "id=?",
                 arrayOf(chatId.toString())
             )
 
             if (role == "user") {
-                updateAutomaticTitle(db, chatId, content.trim(), now)
+                updateAutomaticTitle(
+                    db,
+                    chatId,
+                    content.trim(),
+                    now
+                )
             }
 
             db.setTransactionSuccessful()
@@ -202,6 +378,26 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
         } finally {
             db.endTransaction()
         }
+    }
+
+    @Synchronized
+    fun updateMessageStatus(
+        messageId: Long,
+        status: String,
+        metadataJson: String? = null
+    ) {
+        val values = ContentValues().apply {
+            put("status", status)
+            if (metadataJson != null) {
+                put("metadata_json", metadataJson)
+            }
+        }
+        writableDatabase.update(
+            TABLE_MESSAGES,
+            values,
+            "id=?",
+            arrayOf(messageId.toString())
+        )
     }
 
     private fun updateAutomaticTitle(
@@ -220,14 +416,19 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
             null,
             "1"
         ).use { cursor ->
-            if (cursor.moveToFirst()) cursor.getString(0) else null
+            if (cursor.moveToFirst()) {
+                cursor.getString(0)
+            } else {
+                null
+            }
         } ?: return
 
         if (current != "New chat") return
 
         val clean = firstUserText
-            .replace("\n", " ")
-            .replace(Regex("\\s+"), " ")
+            .replace("
+", " ")
+            .replace(Regex("\s+"), " ")
             .trim()
 
         val title = when {
@@ -249,12 +450,58 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
 
     @Synchronized
     fun renameChat(chatId: Long, title: String) {
-        val clean = title.trim().ifBlank { "New chat" }.take(80)
+        val clean = title
+            .trim()
+            .ifBlank { "New chat" }
+            .take(80)
         writableDatabase.update(
             TABLE_CHATS,
             ContentValues().apply {
                 put("title", clean)
-                put("updated_at", System.currentTimeMillis())
+                put(
+                    "updated_at",
+                    System.currentTimeMillis()
+                )
+            },
+            "id=?",
+            arrayOf(chatId.toString())
+        )
+    }
+
+    @Synchronized
+    fun setPinned(
+        chatId: Long,
+        pinned: Boolean
+    ) {
+        writableDatabase.update(
+            TABLE_CHATS,
+            ContentValues().apply {
+                put(
+                    "pinned",
+                    if (pinned) 1 else 0
+                )
+            },
+            "id=?",
+            arrayOf(chatId.toString())
+        )
+    }
+
+    @Synchronized
+    fun setArchived(
+        chatId: Long,
+        archived: Boolean
+    ) {
+        writableDatabase.update(
+            TABLE_CHATS,
+            ContentValues().apply {
+                put(
+                    "archived",
+                    if (archived) 1 else 0
+                )
+                put(
+                    "updated_at",
+                    System.currentTimeMillis()
+                )
             },
             "id=?",
             arrayOf(chatId.toString())
@@ -272,7 +519,25 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
 
     @Synchronized
     fun deleteAllChats() {
-        writableDatabase.delete(TABLE_MESSAGES, null, null)
-        writableDatabase.delete(TABLE_CHATS, null, null)
+        writableDatabase.delete(
+            TABLE_TOOL_CALLS,
+            null,
+            null
+        )
+        writableDatabase.delete(
+            TABLE_ATTACHMENTS,
+            null,
+            null
+        )
+        writableDatabase.delete(
+            TABLE_MESSAGES,
+            null,
+            null
+        )
+        writableDatabase.delete(
+            TABLE_CHATS,
+            null,
+            null
+        )
     }
 }
