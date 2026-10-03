@@ -1,6 +1,8 @@
 package com.mobilemcp.pro
 
 import android.content.Context
+import android.net.Uri
+import java.io.ByteArrayOutputStream
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
@@ -507,6 +509,63 @@ internal class PrimePluginStore(
     }
 }
 
+internal class PrimePluginManifestLoader(
+    context: Context
+) {
+    companion object {
+        private const val MAX_BYTES =
+            256 * 1024
+    }
+
+    private val appContext =
+        context.applicationContext
+
+    fun load(uri: Uri): String {
+        val input =
+            appContext
+                .contentResolver
+                .openInputStream(uri)
+                ?: throw IllegalStateException(
+                    "Plugin manifest is not readable"
+                )
+
+        return input.use { stream ->
+            val output =
+                ByteArrayOutputStream(
+                    32 * 1024
+                )
+            val buffer =
+                ByteArray(
+                    8 * 1024
+                )
+            var total = 0
+
+            while (true) {
+                val count =
+                    stream.read(buffer)
+                if (count < 0) break
+                total += count
+                if (
+                    total > MAX_BYTES
+                ) {
+                    throw IllegalArgumentException(
+                        "Plugin manifest exceeds 256 KiB"
+                    )
+                }
+                output.write(
+                    buffer,
+                    0,
+                    count
+                )
+            }
+
+            output.toString(
+                Charsets.UTF_8.name()
+            )
+        }
+    }
+}
+
 internal class PrimePluginManager(
     context: Context,
     private val pluginStore:
@@ -535,6 +594,21 @@ internal class PrimePluginManager(
         val now =
             System.currentTimeMillis()
 
+        val existingServer =
+            existing?.let {
+                mcpStore.get(
+                    it.mcpServerId
+                )
+            }
+        val effectiveToken =
+            bearerToken
+                ?.trim()
+                ?.takeIf {
+                    it.isNotBlank()
+                }
+                ?: existingServer
+                    ?.bearerToken
+
         val server =
             mcpStore.save(
                 name =
@@ -543,7 +617,7 @@ internal class PrimePluginManager(
                 url =
                     manifest.mcpUrl,
                 bearerToken =
-                    bearerToken,
+                    effectiveToken,
                 enabled =
                     existing
                         ?.enabled
