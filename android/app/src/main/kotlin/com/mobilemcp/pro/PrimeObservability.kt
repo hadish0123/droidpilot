@@ -264,6 +264,11 @@ internal class PrimeObservabilityStore(
     }
 
     @Synchronized
+    fun all():
+        List<PrimeAiUsageEvent> =
+        readAll()
+
+    @Synchronized
     fun recent(
         limit: Int = 30
     ): List<PrimeAiUsageEvent> =

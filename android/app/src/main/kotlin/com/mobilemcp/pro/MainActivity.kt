@@ -72,6 +72,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var memoryStore: PrimeMemoryStore
     private lateinit var providerStore: PrimeProviderStore
     private lateinit var observabilityStore: PrimeObservabilityStore
+    private lateinit var costStore: PrimeCostStore
     private lateinit var mcpServerStore: PrimeMcpServerStore
     private lateinit var pluginManager: PrimePluginManager
     private lateinit var pluginManifestLoader: PrimePluginManifestLoader
@@ -151,6 +152,7 @@ class MainActivity : AppCompatActivity() {
         memoryStore = PrimeMemoryStore(applicationContext)
         providerStore = PrimeProviderStore(applicationContext)
         observabilityStore = PrimeObservabilityStore(applicationContext)
+        costStore = PrimeCostStore(applicationContext)
         mcpServerStore = PrimeMcpServerStore(applicationContext)
         pluginManager = PrimePluginManager(
             context = applicationContext,
@@ -2281,9 +2283,17 @@ class MainActivity : AppCompatActivity() {
         val summary =
             observabilityStore
                 .summary()
-        val recent =
+        val events =
             observabilityStore
-                .recent(20)
+                .all()
+        val recent =
+            events
+                .asReversed()
+                .take(20)
+        val cost =
+            costStore.estimate(
+                events
+            )
 
         val details =
             buildString {
@@ -2311,6 +2321,28 @@ class MainActivity : AppCompatActivity() {
                             .averageLatencyMs +
                         " ms"
                 )
+
+                if (
+                    cost.matchedEvents > 0
+                ) {
+                    appendLine(
+                        "Estimated configured cost: $" +
+                            String.format(
+                                Locale.US,
+                                "%.6f",
+                                cost.usd
+                            )
+                    )
+                }
+                if (
+                    cost.unmatchedEvents > 0
+                ) {
+                    appendLine(
+                        "Cost without configured rate: " +
+                            cost.unmatchedEvents +
+                            " calls"
+                    )
+                }
 
                 if (
                     summary.byProvider
@@ -2399,7 +2431,7 @@ class MainActivity : AppCompatActivity() {
 
                 appendLine()
                 append(
-                    "Token counts are local estimates for diagnostics, not provider billing totals."
+                    "Token and cost values are local estimates. Cost is calculated only when you configure a provider/model rate; it is not a provider invoice."
                 )
             }.trim()
 
@@ -2412,6 +2444,11 @@ class MainActivity : AppCompatActivity() {
                 "بستن",
                 null
             )
+            .setNeutralButton(
+                "Cost rates"
+            ) { _, _ ->
+                showCostRates()
+            }
             .setNegativeButton(
                 "پاک کردن آمار"
             ) { _, _ ->
@@ -2424,6 +2461,280 @@ class MainActivity : AppCompatActivity() {
                 ).show()
             }
             .show()
+    }
+
+    private fun showCostRates() {
+        val rates = costStore.list()
+        val labels =
+            buildList {
+                add("＋ افزودن / ویرایش نرخ")
+                rates.forEach { rate ->
+                    add(
+                        rate.providerId +
+                            " · " +
+                            rate.modelPattern +
+                            " · $" +
+                            rate.inputUsdPerMillion +
+                            "/$" +
+                            rate.outputUsdPerMillion +
+                            " per 1M"
+                    )
+                }
+            }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("Cost rates")
+            .setMessage(
+                if (rates.isEmpty()) {
+                    "هیچ نرخ قیمتی تنظیم نشده. PRIME قیمت vendorها را hardcode نمی‌کند؛ نرخ‌های فعلی provider/model را خودت وارد کن."
+                } else {
+                    "Input / Output USD per 1M tokens. این نرخ‌ها فقط برای تخمین محلی استفاده می‌شوند."
+                }
+            )
+            .setItems(labels) { _, which ->
+                if (which == 0) {
+                    showCostRateEditor()
+                } else {
+                    val rate =
+                        rates[which - 1]
+                    AlertDialog.Builder(this)
+                        .setTitle(
+                            rate.providerId +
+                                " · " +
+                                rate.modelPattern
+                        )
+                        .setMessage(
+                            "Input: $" +
+                                rate.inputUsdPerMillion +
+                                " / 1M\nOutput: $" +
+                                rate.outputUsdPerMillion +
+                                " / 1M"
+                        )
+                        .setPositiveButton(
+                            "ویرایش"
+                        ) { _, _ ->
+                            showCostRateEditor(
+                                rate
+                            )
+                        }
+                        .setNegativeButton(
+                            "حذف"
+                        ) { _, _ ->
+                            costStore.remove(
+                                rate.id
+                            )
+                        }
+                        .show()
+                }
+            }
+            .setNeutralButton(
+                "پاک کردن همه"
+            ) { _, _ ->
+                costStore.clear()
+            }
+            .setPositiveButton(
+                "بستن",
+                null
+            )
+            .show()
+    }
+
+    private fun showCostRateEditor(
+        existing: PrimeCostRate? = null
+    ) {
+        val target =
+            activeCostTarget()
+        val providerInput =
+            android.widget.EditText(
+                this
+            ).apply {
+                hint = "provider id"
+                setText(
+                    existing?.providerId
+                        ?: target.first
+                )
+                maxLines = 1
+            }
+        val modelInput =
+            android.widget.EditText(
+                this
+            ).apply {
+                hint = "model or *"
+                setText(
+                    existing?.modelPattern
+                        ?: target.second
+                )
+                maxLines = 1
+            }
+        val inputPrice =
+            android.widget.EditText(
+                this
+            ).apply {
+                hint =
+                    "input USD / 1M tokens"
+                setText(
+                    existing
+                        ?.inputUsdPerMillion
+                        ?.toString()
+                        ?: ""
+                )
+                inputType =
+                    android.text.InputType
+                        .TYPE_CLASS_NUMBER or
+                        android.text.InputType
+                            .TYPE_NUMBER_FLAG_DECIMAL
+            }
+        val outputPrice =
+            android.widget.EditText(
+                this
+            ).apply {
+                hint =
+                    "output USD / 1M tokens"
+                setText(
+                    existing
+                        ?.outputUsdPerMillion
+                        ?.toString()
+                        ?: ""
+                )
+                inputType =
+                    android.text.InputType
+                        .TYPE_CLASS_NUMBER or
+                        android.text.InputType
+                            .TYPE_NUMBER_FLAG_DECIMAL
+            }
+
+        val box = LinearLayout(this).apply {
+            orientation =
+                LinearLayout.VERTICAL
+            val pad = dp(18)
+            setPadding(
+                pad,
+                dp(6),
+                pad,
+                0
+            )
+            addView(providerInput)
+            addView(modelInput)
+            addView(inputPrice)
+            addView(outputPrice)
+        }
+
+        val dialog =
+            AlertDialog.Builder(this)
+                .setTitle(
+                    if (existing == null) {
+                        "Add cost rate"
+                    } else {
+                        "Edit cost rate"
+                    }
+                )
+                .setMessage(
+                    "قیمت‌ها از provider گرفته نمی‌شوند؛ مقدار فعلی رسمی را خودت وارد کن."
+                )
+                .setView(box)
+                .setPositiveButton(
+                    "ذخیره",
+                    null
+                )
+                .setNegativeButton(
+                    "لغو",
+                    null
+                )
+                .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(
+                AlertDialog.BUTTON_POSITIVE
+            ).setOnClickListener {
+                val input =
+                    inputPrice.text
+                        ?.toString()
+                        ?.trim()
+                        ?.toDoubleOrNull()
+                val output =
+                    outputPrice.text
+                        ?.toString()
+                        ?.trim()
+                        ?.toDoubleOrNull()
+
+                if (
+                    input == null ||
+                    output == null ||
+                    input < 0.0 ||
+                    output < 0.0
+                ) {
+                    inputPrice.error =
+                        "یک عدد نامنفی وارد کن"
+                    outputPrice.error =
+                        "یک عدد نامنفی وارد کن"
+                    return@setOnClickListener
+                }
+
+                runCatching {
+                    existing?.let {
+                        costStore.remove(
+                            it.id
+                        )
+                    }
+                    costStore.save(
+                        providerId =
+                            providerInput.text
+                                ?.toString()
+                                .orEmpty(),
+                        modelPattern =
+                            modelInput.text
+                                ?.toString()
+                                .orEmpty(),
+                        inputUsdPerMillion =
+                            input,
+                        outputUsdPerMillion =
+                            output
+                    )
+                }.onSuccess {
+                    dialog.dismiss()
+                    showCostRates()
+                }.onFailure {
+                    providerInput.error =
+                        it.message
+                            ?: "نرخ معتبر نیست"
+                }
+            }
+        }
+
+        dialog.show()
+    }
+
+    private fun activeCostTarget():
+        Pair<String, String> {
+        val activeId =
+            providerStore.activeId()
+        if (
+            activeId ==
+                PrimeProviderStore
+                    .CHATGPT_ID
+        ) {
+            return "openai-responses" to
+                "*"
+        }
+
+        val profile =
+            providerStore.get(activeId)
+                ?: return "unknown" to "*"
+        val provider = when (
+            profile.kind
+        ) {
+            PrimeProviderKind.OPENROUTER ->
+                "openrouter"
+            PrimeProviderKind.GEMINI ->
+                "gemini"
+            PrimeProviderKind.ANTHROPIC ->
+                "anthropic"
+            PrimeProviderKind.OPENAI_COMPATIBLE ->
+                "openai-compatible"
+        }
+
+        return provider to
+            profile.model
     }
 
     private fun showProviders() {
