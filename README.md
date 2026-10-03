@@ -283,3 +283,5 @@ This repository remains under the MIT License. PRIME P6 is derived from the open
 See `NOTICE.md` for attribution.
 
 - Chat message history supports long-press copy, non-destructive edit-and-branch, regenerate-in-branch, and explicit conversation branching while preserving the original thread.
+
+- API 34 Android instrumentation CI validates SQLite persistence and Android Keystore encryption on an emulator.
