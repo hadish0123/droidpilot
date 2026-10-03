@@ -79,7 +79,7 @@ class PrimeMcpClientTest {
                         ): MockResponse {
                             requests += request
                             val json = JSONObject(
-                                request.body.readUtf8()
+                                request.body.clone().readUtf8()
                             )
                             val id = json.optLong("id")
                             val method = json
@@ -251,7 +251,7 @@ class PrimeMcpClientTest {
                             request: RecordedRequest
                         ): MockResponse {
                             requests += request
-                            val raw = request.body.readUtf8()
+                            val raw = request.body.clone().readUtf8()
                             val json = JSONObject(raw)
                             val method = json
                                 .optString("method")
@@ -438,7 +438,7 @@ class PrimeMcpClientTest {
                         ): MockResponse {
                             requests += request
                             val json = JSONObject(
-                                request.body.readUtf8()
+                                request.body.clone().readUtf8()
                             )
                             val method = json
                                 .optString("method")
