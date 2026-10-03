@@ -72,6 +72,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var mcpServerStore: PrimeMcpServerStore
     private lateinit var pluginManager: PrimePluginManager
     private lateinit var pluginManifestLoader: PrimePluginManifestLoader
+    private lateinit var taskStore: PrimeTaskStore
+    private lateinit var taskScheduler: PrimeTaskScheduler
     private lateinit var mcpClient: PrimeMcpClient
     private lateinit var mcpToolSource: PrimeMcpToolSource
     private val mcpDiscoveryCache =
@@ -151,6 +153,13 @@ class MainActivity : AppCompatActivity() {
         )
         pluginManifestLoader =
             PrimePluginManifestLoader(
+                applicationContext
+            )
+        taskStore = PrimeTaskStore(
+            applicationContext
+        )
+        taskScheduler =
+            PrimeTaskScheduler(
                 applicationContext
             )
         mcpClient = PrimeMcpClient(
@@ -1601,6 +1610,7 @@ class MainActivity : AppCompatActivity() {
             "فایل‌های این چت",
             "افزودن تصویر",
             "تصاویر این چت",
+            "Tasks & Automations",
             "Plugins",
             "MCP Servers"
         )
@@ -1624,11 +1634,426 @@ class MainActivity : AppCompatActivity() {
                     6 -> showAttachmentManager()
                     7 -> pickImages()
                     8 -> showImageManager()
-                    9 -> showPlugins()
-                    10 -> showMcpServers()
+                    9 -> showTasks()
+                    10 -> showPlugins()
+                    11 -> showMcpServers()
                 }
             }
             .show()
+    }
+
+    private fun showTasks() {
+        val tasks = taskStore.list()
+
+        if (tasks.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(
+                    "Tasks & Automations"
+                )
+                .setMessage(
+                    "Reminder یا AI Brief زمان‌بندی‌شده بساز. " +
+                        "Taskهای دوره‌ای حداقل هر ۱۵ دقیقه اجرا می‌شوند."
+                )
+                .setPositiveButton(
+                    "ساخت Task"
+                ) { _, _ ->
+                    chooseTaskType()
+                }
+                .setNegativeButton(
+                    "بستن",
+                    null
+                )
+                .show()
+            return
+        }
+
+        val labels = tasks
+            .map { task ->
+                buildString {
+                    append(task.title)
+                    append(" · ")
+                    append(
+                        when (
+                            task.type
+                        ) {
+                            PrimeTaskType
+                                .REMINDER ->
+                                "Reminder"
+                            PrimeTaskType
+                                .AI_BRIEF ->
+                                "AI Brief"
+                        }
+                    )
+                    append(" · ")
+                    append(
+                        if (
+                            task.enabled
+                        ) {
+                            "فعال"
+                        } else {
+                            "خاموش"
+                        }
+                    )
+                }
+            }
+            .toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle(
+                "Tasks & Automations"
+            )
+            .setItems(
+                labels
+            ) { _, which ->
+                showTaskDetails(
+                    tasks[which]
+                )
+            }
+            .setPositiveButton(
+                "ساخت"
+            ) { _, _ ->
+                chooseTaskType()
+            }
+            .setNegativeButton(
+                "بستن",
+                null
+            )
+            .show()
+    }
+
+    private fun chooseTaskType() {
+        AlertDialog.Builder(this)
+            .setTitle(
+                "نوع Task"
+            )
+            .setItems(
+                arrayOf(
+                    "Reminder محلی",
+                    "AI Brief پس‌زمینه"
+                )
+            ) { _, which ->
+                showCreateTaskDialog(
+                    if (which == 0) {
+                        PrimeTaskType
+                            .REMINDER
+                    } else {
+                        PrimeTaskType
+                            .AI_BRIEF
+                    }
+                )
+            }
+            .setNegativeButton(
+                "لغو",
+                null
+            )
+            .show()
+    }
+
+    private fun showCreateTaskDialog(
+        type: PrimeTaskType
+    ) {
+        val panel =
+            LinearLayout(this).apply {
+                orientation =
+                    LinearLayout.VERTICAL
+                setPadding(
+                    dp(24),
+                    dp(8),
+                    dp(24),
+                    dp(4)
+                )
+            }
+
+        fun input(
+            hintText: String,
+            numeric: Boolean = false
+        ) = android.widget
+            .EditText(this)
+            .apply {
+                hint = hintText
+                if (numeric) {
+                    inputType =
+                        android.text
+                            .InputType
+                            .TYPE_CLASS_NUMBER
+                    maxLines = 1
+                }
+            }
+
+        val title = input(
+            "عنوان Task"
+        )
+        val prompt = input(
+            if (
+                type ==
+                PrimeTaskType
+                    .AI_BRIEF
+            ) {
+                "درخواست AI، مثلاً: هر بار خلاصه‌ای از اهداف پروژه بده"
+            } else {
+                "متن Reminder"
+            }
+        ).apply {
+            minLines = 2
+            maxLines = 5
+        }
+        val delay = input(
+            "چند دقیقه دیگر شروع شود؟ (0 = اکنون)",
+            numeric = true
+        ).apply {
+            setText("0")
+        }
+        val interval = input(
+            "تکرار هر چند دقیقه؟ خالی = یک‌بار، حداقل 15",
+            numeric = true
+        )
+
+        panel.addView(title)
+        panel.addView(prompt)
+        panel.addView(delay)
+        panel.addView(interval)
+
+        AlertDialog.Builder(this)
+            .setTitle(
+                if (
+                    type ==
+                    PrimeTaskType
+                        .AI_BRIEF
+                ) {
+                    "AI Brief جدید"
+                } else {
+                    "Reminder جدید"
+                }
+            )
+            .setView(panel)
+            .setPositiveButton(
+                "زمان‌بندی"
+            ) { _, _ ->
+                try {
+                    val delayMinutes =
+                        delay.text
+                            ?.toString()
+                            ?.trim()
+                            ?.toLongOrNull()
+                            ?: 0L
+                    val intervalValue =
+                        interval.text
+                            ?.toString()
+                            ?.trim()
+                            ?.takeIf {
+                                it.isNotBlank()
+                            }
+                            ?.toLongOrNull()
+
+                    val task =
+                        taskStore.create(
+                            title = title.text
+                                ?.toString()
+                                .orEmpty(),
+                            prompt = prompt.text
+                                ?.toString()
+                                .orEmpty(),
+                            type = type,
+                            scheduleKind =
+                                if (
+                                    intervalValue ==
+                                    null
+                                ) {
+                                    PrimeTaskScheduleKind
+                                        .ONE_TIME
+                                } else {
+                                    PrimeTaskScheduleKind
+                                        .PERIODIC
+                                },
+                            initialDelayMinutes =
+                                delayMinutes,
+                            intervalMinutes =
+                                intervalValue
+                        )
+
+                    taskScheduler
+                        .schedule(task)
+                    requestTaskNotificationPermission()
+                    Toast.makeText(
+                        this,
+                        "Task زمان‌بندی شد",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } catch (e: Exception) {
+                    appendChat(
+                        "PRIME",
+                        "Task ساخته نشد: " +
+                            (
+                                e.message
+                                    ?: "تنظیم زمان نامعتبر"
+                            ).take(400),
+                        persist = false
+                    )
+                }
+            }
+            .setNegativeButton(
+                "لغو",
+                null
+            )
+            .show()
+    }
+
+    private fun showTaskDetails(
+        task: PrimeTaskRecord
+    ) {
+        val details =
+            buildString {
+                appendLine(
+                    when (task.type) {
+                        PrimeTaskType.REMINDER ->
+                            "Reminder"
+                        PrimeTaskType.AI_BRIEF ->
+                            "AI Brief"
+                    }
+                )
+                appendLine()
+                appendLine(
+                    task.prompt.take(
+                        700
+                    )
+                )
+                appendLine()
+                append("Schedule: ")
+                when (
+                    task.scheduleKind
+                ) {
+                    PrimeTaskScheduleKind
+                        .ONE_TIME -> {
+                        append(
+                            "one-time"
+                        )
+                    }
+                    PrimeTaskScheduleKind
+                        .PERIODIC -> {
+                        append(
+                            "every " +
+                                task.intervalMinutes +
+                                " min"
+                        )
+                    }
+                }
+                appendLine()
+                append(
+                    "Initial delay: "
+                )
+                append(
+                    task.initialDelayMinutes
+                )
+                appendLine(" min")
+                task.lastRunAt?.let {
+                    append(
+                        "Last run: "
+                    )
+                    appendLine(
+                        Date(it).toString()
+                    )
+                }
+                task.lastStatus?.let {
+                    append(
+                        "Status: "
+                    )
+                    appendLine(it)
+                }
+            }.trim()
+
+        AlertDialog.Builder(this)
+            .setTitle(task.title)
+            .setMessage(details)
+            .setPositiveButton(
+                "Reschedule"
+            ) { _, _ ->
+                val current =
+                    taskStore.get(
+                        task.id
+                    )
+                if (
+                    current != null &&
+                    current.enabled
+                ) {
+                    taskScheduler
+                        .schedule(
+                            current
+                        )
+                    Toast.makeText(
+                        this,
+                        "Task دوباره زمان‌بندی شد",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            .setNeutralButton(
+                if (
+                    task.enabled
+                ) {
+                    "غیرفعال"
+                } else {
+                    "فعال"
+                }
+            ) { _, _ ->
+                val updated =
+                    taskStore.setEnabled(
+                        task.id,
+                        !task.enabled
+                    )
+                if (
+                    updated != null
+                ) {
+                    if (
+                        updated.enabled
+                    ) {
+                        taskScheduler
+                            .schedule(
+                                updated
+                            )
+                        requestTaskNotificationPermission()
+                    } else {
+                        taskScheduler
+                            .cancel(
+                                updated.id
+                            )
+                    }
+                }
+            }
+            .setNegativeButton(
+                "حذف"
+            ) { _, _ ->
+                taskScheduler
+                    .cancel(task.id)
+                taskStore.remove(
+                    task.id
+                )
+            }
+            .show()
+    }
+
+    private fun requestTaskNotificationPermission() {
+        if (
+            android.os.Build
+                .VERSION.SDK_INT >= 33 &&
+            ContextCompat
+                .checkSelfPermission(
+                    this,
+                    Manifest.permission
+                        .POST_NOTIFICATIONS
+                ) !=
+                PackageManager
+                    .PERMISSION_GRANTED
+        ) {
+            ActivityCompat
+                .requestPermissions(
+                    this,
+                    arrayOf(
+                        Manifest.permission
+                            .POST_NOTIFICATIONS
+                    ),
+                    6002
+                )
+        }
     }
 
     private fun showPlugins() {
