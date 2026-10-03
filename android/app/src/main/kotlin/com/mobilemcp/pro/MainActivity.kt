@@ -69,6 +69,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var memoryStore: PrimeMemoryStore
     private lateinit var mcpServerStore: PrimeMcpServerStore
     private lateinit var mcpClient: PrimeMcpClient
+    private lateinit var mcpToolSource: PrimeMcpToolSource
     private val mcpDiscoveryCache =
         mutableMapOf<String, PrimeMcpDiscovery>()
     private val attachmentSession = PrimeAttachmentSession()
@@ -115,10 +116,15 @@ class MainActivity : AppCompatActivity() {
         mcpClient = PrimeMcpClient(
             clientVersion = appVersionName()
         )
+        mcpToolSource = PrimeMcpToolSource(
+            mcpServerStore,
+            mcpClient
+        )
         primeAgent = PrimeAgent(
             authManager,
             memoryStore,
-            attachmentSession
+            attachmentSession,
+            mcpToolSource
         )
         chatStore = PrimeChatStore(applicationContext)
         bridgeSecurity = DeviceBridgeSecurity(SecureStore(applicationContext))
@@ -131,6 +137,7 @@ class MainActivity : AppCompatActivity() {
         updateAuthUI()
         openInitialChat()
         warmUpPrime()
+        warmUpMcpTools()
 
         if (intent?.data?.scheme == "primep6") {
             binding.tvAgentStatus.text = "در حال تکمیل اتصال ChatGPT…"
@@ -1762,6 +1769,9 @@ class MainActivity : AppCompatActivity() {
                 )
                 if (server.enabled) {
                     mcpDiscoveryCache.remove(server.id)
+                    mcpToolSource.removeServer(
+                        server.id
+                    )
                 }
             }
             .setNegativeButton("حذف") { _, _ ->
@@ -1781,9 +1791,48 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("حذف") { _, _ ->
                 mcpServerStore.remove(server.id)
                 mcpDiscoveryCache.remove(server.id)
+                mcpToolSource.removeServer(
+                    server.id
+                )
             }
             .setNegativeButton("لغو", null)
             .show()
+    }
+
+    private fun warmUpMcpTools() {
+        val enabled = mcpServerStore
+            .list()
+            .filter { it.enabled }
+        if (enabled.isEmpty()) return
+
+        appScope.launch {
+            enabled.forEach { server ->
+                try {
+                    val discovery =
+                        withContext(
+                            Dispatchers.IO
+                        ) {
+                            mcpClient.discover(
+                                server
+                            )
+                        }
+                    mcpDiscoveryCache[
+                        server.id
+                    ] = discovery
+                    mcpToolSource
+                        .updateDiscovery(
+                            discovery
+                        )
+                } catch (_: Exception) {
+                    mcpDiscoveryCache.remove(
+                        server.id
+                    )
+                    mcpToolSource.removeServer(
+                        server.id
+                    )
+                }
+            }
+        }
     }
 
     private fun discoverAllMcpServers() {
@@ -1822,6 +1871,9 @@ class MainActivity : AppCompatActivity() {
                         mcpDiscoveryCache[
                             server.id
                         ] = discovery
+                        mcpToolSource.updateDiscovery(
+                            discovery
+                        )
                         ok += 1
                     } catch (e: Exception) {
                         failures +=
@@ -1887,6 +1939,9 @@ class MainActivity : AppCompatActivity() {
                 mcpDiscoveryCache[
                     server.id
                 ] = discovery
+                mcpToolSource.updateDiscovery(
+                    discovery
+                )
 
                 appendChat(
                     "PRIME",

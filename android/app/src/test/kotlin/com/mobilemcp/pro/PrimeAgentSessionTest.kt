@@ -540,4 +540,180 @@ class PrimeAgentSessionTest {
     }
 
 
+    @Test fun readOnlyExternalToolRunsInsideAgentLoop() = runBlocking {
+        val responses = ArrayDeque<String>().apply {
+            add(
+                """{"type":"action","command":"mcp__docs__lookup__1","params":{"query":"PRIME"},"risk":"read","note":"در حال جستجو"}"""
+            )
+            add(
+                """{"type":"reply","text":"نتیجه پیدا شد: 42"}"""
+            )
+        }
+        val provider = object : AiProvider {
+            override val providerId =
+                "external-tool-provider"
+            override fun isAvailable() = true
+            override suspend fun listModels(
+                forceRefresh: Boolean
+            ) = listOf(
+                AiModel(
+                    "tool_sol",
+                    "Tool Sol"
+                )
+            )
+
+            override suspend fun streamText(
+                request: AiTextRequest,
+                onTextDelta: ((String) -> Unit)?
+            ): String = responses.removeFirst()
+        }
+
+        var calls = 0
+        val definition =
+            PrimeExternalToolDefinition(
+                command =
+                    "mcp__docs__lookup__1",
+                displayName = "lookup",
+                description = "Lookup docs",
+                inputSchema = JSONObject()
+                    .put(
+                        "type",
+                        "object"
+                    ),
+                minimumRisk = ToolRisk.READ,
+                sourceLabel = "Docs"
+            )
+        val external =
+            object :
+                PrimeExternalToolSource {
+                override fun definitions() =
+                    listOf(definition)
+
+                override suspend fun execute(
+                    command: String,
+                    params: JSONObject
+                ): PrimeActionResult {
+                    calls += 1
+                    assertEquals(
+                        definition.command,
+                        command
+                    )
+                    assertEquals(
+                        "PRIME",
+                        params.getString(
+                            "query"
+                        )
+                    )
+                    return PrimeActionResult(
+                        true,
+                        "42"
+                    )
+                }
+            }
+
+        val agent = PrimeAgent(
+            provider = provider,
+            externalToolSource = external
+        )
+        val outcome = agent.run(
+            userText =
+                "با ابزار Docs درباره PRIME جستجو کن",
+            confirmedForTask = false,
+            uiProvider = {
+                error(
+                    "External-only task must not read Android UI"
+                )
+            },
+            actionRunner = { _, _ ->
+                error(
+                    "External-only task must not run phone tools"
+                )
+            },
+            onProgress = {}
+        )
+
+        assertEquals(1, calls)
+        assertEquals(
+            "نتیجه پیدا شد: 42",
+            outcome.text
+        )
+    }
+
+    @Test fun sensitiveExternalToolNeedsConfirmationBeforeExecution() = runBlocking {
+        val provider = object : AiProvider {
+            override val providerId =
+                "sensitive-tool-provider"
+            override fun isAvailable() = true
+            override suspend fun listModels(
+                forceRefresh: Boolean
+            ) = listOf(
+                AiModel(
+                    "tool_sol",
+                    "Tool Sol"
+                )
+            )
+
+            override suspend fun streamText(
+                request: AiTextRequest,
+                onTextDelta: ((String) -> Unit)?
+            ): String =
+                """{"type":"action","command":"mcp__crm__send__1","params":{"message":"hi"},"risk":"safe"}"""
+        }
+
+        var calls = 0
+        val definition =
+            PrimeExternalToolDefinition(
+                command =
+                    "mcp__crm__send__1",
+                displayName = "send",
+                description = null,
+                inputSchema = JSONObject(),
+                minimumRisk =
+                    ToolRisk.SENSITIVE,
+                sourceLabel = "CRM"
+            )
+        val external =
+            object :
+                PrimeExternalToolSource {
+                override fun definitions() =
+                    listOf(definition)
+
+                override suspend fun execute(
+                    command: String,
+                    params: JSONObject
+                ): PrimeActionResult {
+                    calls += 1
+                    return PrimeActionResult(
+                        true,
+                        "sent"
+                    )
+                }
+            }
+
+        val outcome = PrimeAgent(
+            provider = provider,
+            externalToolSource = external
+        ).run(
+            userText = "Use the connected CRM MCP function for this request.",
+            confirmedForTask = false,
+            uiProvider = {
+                error(
+                    "External-only task must not read Android UI"
+                )
+            },
+            actionRunner = { _, _ ->
+                error(
+                    "External-only task must not run phone tools"
+                )
+            },
+            onProgress = {}
+        )
+
+        assertTrue(
+            outcome.needsConfirmation
+        )
+        assertEquals(0, calls)
+    }
+
+
 }

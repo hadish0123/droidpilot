@@ -10,6 +10,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 - Explicit long-term memory for facts, preferences and projects, encrypted locally with Android Keystore
 - Session attachments with local text extraction for PDF, TXT/MD, CSV, JSON, DOCX, XLSX and PPTX
 - Android-side multi-server MCP client with encrypted server/token storage and 2026/2025 protocol negotiation
+- Discovered MCP tools can enter PRIME's agent loop through a namespaced, risk-gated external tool runtime
 - Voice command → Android speech recognition → PRIME
 - Offline Persian voice replies with an embedded sherpa-onnx/Piper engine
 - **Continue with ChatGPT** for eligible ChatGPT Plus / Pro plan usage
@@ -226,6 +227,11 @@ Phone actions pass through `PrimeToolRegistry` and `PrimeToolRuntime` before the
 reach `PhoneController`. The runtime rejects unregistered commands, assigns a
 minimum `ToolRisk`, elevates semantic send/delete/payment-style clicks, and blocks
 sensitive or destructive actions until the user has confirmed the task.
+
+Discovered MCP tools are exposed through a separate namespaced external runtime.
+MCP `readOnlyHint` tools default to read risk, `destructiveHint` tools are
+destructive, and unannotated third-party tools default to sensitive. MCP tool
+results are treated as untrusted data and never as agent instructions.
 
 `PrimeContextManager` owns only the bounded in-memory provider window; the full
 conversation remains in `PrimeChatStore`. It limits request history by message
