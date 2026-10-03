@@ -42,6 +42,8 @@ internal class OpenAIResponsesProvider(
 
     override val providerId: String = "openai-responses"
 
+    override val supportsWebSearch: Boolean = true
+
     private val modelMutex = Mutex()
 
     @Volatile
@@ -115,6 +117,140 @@ internal class OpenAIResponsesProvider(
 
             modelCache = models
             models
+        }
+    }
+
+    override suspend fun searchWeb(
+        request: AiTextRequest
+    ): AiWebResult {
+        return withNetworkRetry(
+            "web search"
+        ) {
+            val token = auth.accessToken()
+            coroutineContext.ensureActive()
+
+            val input = JSONArray()
+            request.messages.forEach { message ->
+                input.put(
+                    JSONObject()
+                        .put(
+                            "role",
+                            message.role
+                        )
+                        .put(
+                            "content",
+                            message.content
+                        )
+                )
+            }
+
+            val body = JSONObject()
+                .put(
+                    "model",
+                    request.model
+                )
+                .put(
+                    "instructions",
+                    request.instructions
+                )
+                .put("input", input)
+                .put(
+                    "tools",
+                    JSONArray().put(
+                        JSONObject().put(
+                            "type",
+                            "web_search"
+                        )
+                    )
+                )
+                .put(
+                    "tool_choice",
+                    "required"
+                )
+                .put(
+                    "include",
+                    JSONArray().put(
+                        "web_search_call.action.sources"
+                    )
+                )
+                .put("store", false)
+                .put("stream", false)
+
+            val conn = URL(
+                endpoints.responses
+            ).openConnection()
+                as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.connectTimeout = 12_000
+            conn.readTimeout = 90_000
+            conn.setRequestProperty(
+                "Authorization",
+                "Bearer " + token
+            )
+            conn.setRequestProperty(
+                "Content-Type",
+                "application/json"
+            )
+            conn.setRequestProperty(
+                "Accept",
+                "application/json"
+            )
+            conn.setRequestProperty(
+                "User-Agent",
+                USER_AGENT
+            )
+
+            val bytes = body.toString()
+                .toByteArray(
+                    Charsets.UTF_8
+                )
+            conn.setFixedLengthStreamingMode(
+                bytes.size
+            )
+
+            try {
+                conn.outputStream.use {
+                    it.write(bytes)
+                }
+
+                val status =
+                    conn.responseCode
+                val responseBody =
+                    (
+                        if (
+                            status in 200..299
+                        ) {
+                            conn.inputStream
+                        } else {
+                            conn.errorStream
+                        }
+                    )
+                        ?.bufferedReader(
+                            Charsets.UTF_8
+                        )
+                        ?.use {
+                            it.readText()
+                        }
+                        .orEmpty()
+
+                if (
+                    status !in 200..299
+                ) {
+                    throw apiError(
+                        status,
+                        responseBody
+                    )
+                }
+
+                coroutineContext
+                    .ensureActive()
+                parseWebResult(
+                    responseBody
+                )
+            } finally {
+                conn.disconnect()
+            }
         }
     }
 
@@ -193,6 +329,199 @@ internal class OpenAIResponsesProvider(
                 conn.disconnect()
             }
         }
+    }
+
+    private fun parseWebResult(
+        raw: String
+    ): AiWebResult {
+        val root = JSONObject(raw)
+        val output = root
+            .optJSONArray("output")
+            ?: JSONArray()
+
+        val text = StringBuilder()
+        val citations =
+            linkedMapOf<String, AiWebCitation>()
+
+        for (
+            outputIndex in 0
+                until output.length()
+        ) {
+            val item = output
+                .optJSONObject(outputIndex)
+                ?: continue
+
+            when (
+                item.optString("type")
+            ) {
+                "message" -> {
+                    val content = item
+                        .optJSONArray(
+                            "content"
+                        )
+                        ?: JSONArray()
+
+                    for (
+                        contentIndex in 0
+                            until content.length()
+                    ) {
+                        val part = content
+                            .optJSONObject(
+                                contentIndex
+                            )
+                            ?: continue
+                        if (
+                            part.optString(
+                                "type"
+                            ) != "output_text"
+                        ) {
+                            continue
+                        }
+
+                        val value =
+                            part.optString(
+                                "text"
+                            )
+                        if (
+                            value.isNotBlank()
+                        ) {
+                            if (
+                                text.isNotEmpty()
+                            ) {
+                                text.appendLine()
+                            }
+                            text.append(value)
+                        }
+
+                        collectAnnotations(
+                            part.optJSONArray(
+                                "annotations"
+                            ),
+                            citations
+                        )
+                    }
+                }
+
+                "web_search_call" -> {
+                    collectSources(
+                        item.optJSONObject(
+                            "action"
+                        )?.optJSONArray(
+                            "sources"
+                        ),
+                        citations
+                    )
+                }
+            }
+        }
+
+        val answer = text
+            .toString()
+            .trim()
+        if (answer.isBlank()) {
+            throw IllegalStateException(
+                "Web search returned no text result"
+            )
+        }
+
+        return AiWebResult(
+            text = answer,
+            citations =
+                citations.values
+                    .take(12)
+        )
+    }
+
+    private fun collectAnnotations(
+        array: JSONArray?,
+        output:
+            MutableMap<String, AiWebCitation>
+    ) {
+        if (array == null) return
+
+        for (
+            index in 0
+                until array.length()
+        ) {
+            val item = array
+                .optJSONObject(index)
+                ?: continue
+            if (
+                item.optString("type") !=
+                "url_citation"
+            ) {
+                continue
+            }
+
+            addCitation(
+                url = item.optString(
+                    "url"
+                ),
+                title = item.optString(
+                    "title"
+                ),
+                output = output
+            )
+        }
+    }
+
+    private fun collectSources(
+        array: JSONArray?,
+        output:
+            MutableMap<String, AiWebCitation>
+    ) {
+        if (array == null) return
+
+        for (
+            index in 0
+                until array.length()
+        ) {
+            val item = array
+                .optJSONObject(index)
+                ?: continue
+            addCitation(
+                url = item.optString(
+                    "url"
+                ),
+                title = item.optString(
+                    "title"
+                ),
+                output = output
+            )
+        }
+    }
+
+    private fun addCitation(
+        url: String,
+        title: String?,
+        output:
+            MutableMap<String, AiWebCitation>
+    ) {
+        val clean = url.trim()
+        if (
+            clean.isBlank() ||
+            output.containsKey(clean)
+        ) {
+            return
+        }
+
+        val valid = runCatching {
+            val parsed = URL(clean)
+            parsed.protocol == "https" ||
+                parsed.protocol == "http"
+        }.getOrDefault(false)
+        if (!valid) return
+
+        output[clean] =
+            AiWebCitation(
+                url = clean,
+                title = title
+                    ?.trim()
+                    ?.takeIf {
+                        it.isNotBlank()
+                    }
+                    ?.take(180)
+            )
     }
 
     private suspend fun <T> withNetworkRetry(
