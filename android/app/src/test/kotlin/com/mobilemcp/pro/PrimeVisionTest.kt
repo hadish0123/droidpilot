@@ -62,4 +62,28 @@ class PrimeVisionTest {
             images.last().name
         )
     }
+
+    @Test
+    fun imageSessionKeepsPersistentAttachmentProvenance() {
+        val session = PrimeImageSession()
+        val stored = session.add(
+            AiImageInput(
+                name = "photo.png",
+                mimeType = "image/png",
+                dataUrl = "data:image/png;base64,AA=="
+            ),
+            byteSize = 2,
+            persistedAttachmentId = 7L,
+            storageUri = "content://images/photo"
+        )
+
+        assertEquals(7L, stored.persistedAttachmentId)
+        assertEquals(
+            "content://images/photo",
+            stored.storageUri
+        )
+        assertTrue(session.remove(stored.id))
+        assertTrue(session.list().isEmpty())
+    }
+
 }

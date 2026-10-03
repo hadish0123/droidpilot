@@ -149,4 +149,29 @@ class PrimeFileCoreTest {
         assertTrue(text.contains("900"))
         assertFalse(text.contains("\t\t"))
     }
+
+    @Test
+    fun documentSessionKeepsPersistentAttachmentProvenance() {
+        val session = PrimeAttachmentSession()
+        val stored = session.add(
+            PrimeParsedDocument(
+                name = "report.pdf",
+                mimeType = "application/pdf",
+                kind = PrimeDocumentKind.PDF,
+                text = "hello",
+                chunks = listOf("hello")
+            ),
+            persistedAttachmentId = 42L,
+            storageUri = "content://docs/report"
+        )
+
+        assertEquals(42L, stored.persistedAttachmentId)
+        assertEquals(
+            "content://docs/report",
+            stored.storageUri
+        )
+        assertTrue(session.remove(stored.id))
+        assertTrue(session.listDocuments().isEmpty())
+    }
+
 }

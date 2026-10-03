@@ -15,6 +15,18 @@ data class PrimeChatSummary(
     val isArchived: Boolean = false
 )
 
+data class PrimeStoredAttachment(
+    val id: Long,
+    val chatId: Long,
+    val messageId: Long?,
+    val kind: String,
+    val displayName: String,
+    val mimeType: String?,
+    val storageUri: String,
+    val sizeBytes: Long?,
+    val createdAt: Long
+)
+
 data class PrimeStoredMessage(
     val id: Long,
     val chatId: Long,
@@ -634,6 +646,109 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
             "id=?",
             arrayOf(chatId.toString())
         )
+    }
+
+    @Synchronized
+    fun addAttachment(
+        chatId: Long,
+        kind: String,
+        displayName: String,
+        mimeType: String?,
+        storageUri: String,
+        sizeBytes: Long? = null,
+        messageId: Long? = null
+    ): Long {
+        require(kind == "document" || kind == "image") {
+            "Unsupported attachment kind"
+        }
+        val cleanName = displayName.trim().take(240)
+        require(cleanName.isNotBlank()) {
+            "Attachment name is required"
+        }
+        require(storageUri.isNotBlank()) {
+            "Attachment URI is required"
+        }
+
+        val values = ContentValues().apply {
+            put("chat_id", chatId)
+            if (messageId == null) putNull("message_id")
+            else put("message_id", messageId)
+            put("kind", kind)
+            put("display_name", cleanName)
+            if (mimeType == null) putNull("mime_type")
+            else put("mime_type", mimeType)
+            put("storage_uri", storageUri)
+            if (sizeBytes == null) putNull("size_bytes")
+            else put("size_bytes", sizeBytes)
+            put("created_at", System.currentTimeMillis())
+        }
+        return writableDatabase.insertOrThrow(
+            TABLE_ATTACHMENTS,
+            null,
+            values
+        )
+    }
+
+    @Synchronized
+    fun attachments(chatId: Long): List<PrimeStoredAttachment> {
+        val result = mutableListOf<PrimeStoredAttachment>()
+        readableDatabase.query(
+            TABLE_ATTACHMENTS,
+            arrayOf(
+                "id", "chat_id", "message_id", "kind",
+                "display_name", "mime_type", "storage_uri",
+                "size_bytes", "created_at"
+            ),
+            "chat_id=?",
+            arrayOf(chatId.toString()),
+            null,
+            null,
+            "id ASC"
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += PrimeStoredAttachment(
+                    id = cursor.getLong(0),
+                    chatId = cursor.getLong(1),
+                    messageId = if (cursor.isNull(2)) null else cursor.getLong(2),
+                    kind = cursor.getString(3),
+                    displayName = cursor.getString(4),
+                    mimeType = if (cursor.isNull(5)) null else cursor.getString(5),
+                    storageUri = cursor.getString(6),
+                    sizeBytes = if (cursor.isNull(7)) null else cursor.getLong(7),
+                    createdAt = cursor.getLong(8)
+                )
+            }
+        }
+        return result
+    }
+
+    @Synchronized
+    fun deleteAttachment(attachmentId: Long) {
+        writableDatabase.delete(
+            TABLE_ATTACHMENTS,
+            "id=?",
+            arrayOf(attachmentId.toString())
+        )
+    }
+
+    @Synchronized
+    fun deleteAttachments(
+        chatId: Long,
+        kind: String? = null
+    ) {
+        if (kind == null) {
+            writableDatabase.delete(
+                TABLE_ATTACHMENTS,
+                "chat_id=?",
+                arrayOf(chatId.toString())
+            )
+        } else {
+            writableDatabase.delete(
+                TABLE_ATTACHMENTS,
+                "chat_id=? AND kind=?",
+                arrayOf(chatId.toString(), kind)
+            )
+        }
     }
 
     @Synchronized
