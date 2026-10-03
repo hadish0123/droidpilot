@@ -8,6 +8,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 
 - Chat directly inside the Android app with live streamed text and user-controlled Stop generation
 - Explicit long-term memory for facts, preferences and projects, encrypted locally with Android Keystore
+- Session attachments with local text extraction for PDF, TXT/MD, CSV, JSON, DOCX, XLSX and PPTX
 - Voice command → Android speech recognition → PRIME
 - Offline Persian voice replies with an embedded sherpa-onnx/Piper engine
 - **Continue with ChatGPT** for eligible ChatGPT Plus / Pro plan usage
@@ -31,6 +32,7 @@ PRIME is designed local-first:
 - Explicit PRIME long-term memories are also encrypted with Android Keystore; PRIME does not silently extract memories from every conversation.
 - Access and refresh tokens are never written to source code or app logs.
 - Phone actions execute locally on the Android device.
+- Attached documents are parsed locally. Extracted attachment text is kept only in the active in-memory chat session, and only relevant excerpts are sent with a model request.
 - The optional Device Bridge is off until the user starts it.
 - Device Bridge commands require a per-install 256-bit bearer token stored through Android Keystore.
 - The Accessibility Service is off until the user enables it.

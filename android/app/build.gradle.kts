@@ -83,6 +83,7 @@ if (!sherpaAar.isFile || sha256(sherpaAar) != sherpaSha256) {
 dependencies {
     implementation(files(sherpaAar))
     implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")

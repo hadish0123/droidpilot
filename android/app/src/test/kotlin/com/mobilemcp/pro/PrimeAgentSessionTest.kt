@@ -462,4 +462,57 @@ class PrimeAgentSessionTest {
     }
 
 
+    @Test fun attachedFileExcerptsAreInjectedAsUntrustedData() = runBlocking {
+        val requests = mutableListOf<AiTextRequest>()
+        val provider = object : AiProvider {
+            override val providerId = "file-test-provider"
+            override fun isAvailable() = true
+            override suspend fun listModels(forceRefresh: Boolean) =
+                listOf(AiModel("file_luna", "File Luna"))
+
+            override suspend fun streamText(
+                request: AiTextRequest,
+                onTextDelta: ((String) -> Unit)?
+            ): String {
+                requests += request
+                return "900"
+            }
+        }
+
+        val files = object : PrimeFileContextSource {
+            override fun relevant(
+                query: String,
+                limit: Int
+            ): List<PrimeFileChunk> = listOf(
+                PrimeFileChunk(
+                    documentId = 7,
+                    documentName = "invoice.csv",
+                    index = 1,
+                    text = "Invoice 200 total 900",
+                    normalized = "invoice 200 total 900",
+                    addedAt = 1
+                )
+            )
+        }
+
+        val agent = PrimeAgent(
+            provider = provider,
+            fileContextSource = files
+        )
+        val outcome = agent.run(
+            userText = "Invoice 200 چقدر است؟",
+            confirmedForTask = false,
+            uiProvider = { error("Normal chat must not read UI") },
+            actionRunner = { _, _ -> error("Normal chat must not act") },
+            onProgress = {}
+        )
+
+        assertEquals("900", outcome.text)
+        val instructions = requests.single().instructions
+        assertTrue(instructions.contains("Attached file excerpts"))
+        assertTrue(instructions.contains("Invoice 200 total 900"))
+        assertTrue(instructions.contains("untrusted user-provided content"))
+    }
+
+
 }
