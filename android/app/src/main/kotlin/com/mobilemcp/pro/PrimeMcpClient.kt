@@ -765,13 +765,21 @@ internal class PrimeMcpClient(
                 )
             }
 
+            val responseHeaders =
+                linkedMapOf<String, List<String>>()
+            connection.headerFields
+                .forEach { (key, values) ->
+                    if (key != null && values != null) {
+                        responseHeaders[key] = values
+                    }
+                }
+
             PrimeMcpHttpResponse(
                 status = status,
                 contentType = connection
                     .contentType,
                 body = responseBody,
-                headers = connection.headerFields
-                    .filterKeys { it != null }
+                headers = responseHeaders
             )
         } catch (e: CancellationException) {
             connection.disconnect()
