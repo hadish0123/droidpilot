@@ -206,4 +206,111 @@ class PrimeExternalToolRuntimeTest {
                     .requiresConfirmation
             )
         }
+
+    @Test
+    fun catalogExposesResourcesAndPromptsAsReadOnlyCapabilities() {
+        val discovery = PrimeMcpDiscovery(
+            serverId = "docs-server",
+            serverName = "Docs",
+            era = PrimeMcpProtocolEra.MODERN_2026,
+            protocolVersion = PrimeMcpClient.MODERN_VERSION,
+            remoteServerName = "docs",
+            remoteServerVersion = "1",
+            tools = emptyList(),
+            resources = listOf(
+                PrimeMcpResource(
+                    uri = "docs://handbook",
+                    name = "Handbook",
+                    description = "Team handbook",
+                    mimeType = "text/plain"
+                )
+            ),
+            prompts = listOf(
+                PrimeMcpPrompt(
+                    name = "summarize",
+                    description = "Summarize context"
+                )
+            ),
+            connectedAt = 1L
+        )
+
+        val definitions =
+            PrimeMcpExternalCatalog
+                .definitions(discovery)
+
+        assertEquals(2, definitions.size)
+
+        val resource = definitions
+            .first {
+                it.command.startsWith(
+                    "mcpres__"
+                )
+            }
+        val prompt = definitions
+            .first {
+                it.command.startsWith(
+                    "mcpprompt__"
+                )
+            }
+
+        assertEquals(
+            ToolRisk.READ,
+            resource.minimumRisk
+        )
+        assertEquals(
+            ToolRisk.READ,
+            prompt.minimumRisk
+        )
+        assertEquals(
+            "Handbook",
+            resource.displayName
+        )
+        assertEquals(
+            "summarize",
+            prompt.displayName
+        )
+        assertFalse(
+            resource.inputSchema
+                ?.optBoolean(
+                    "additionalProperties",
+                    true
+                ) ?: true
+        )
+    }
+
+    @Test
+    fun resourceAndPromptNamespacesDoNotCollideWithTools() {
+        val tool =
+            PrimeMcpToolSource.commandFor(
+                "server-a",
+                "same"
+            )
+        val resource =
+            PrimeMcpToolSource
+                .resourceCommandFor(
+                    "server-a",
+                    "same"
+                )
+        val prompt =
+            PrimeMcpToolSource
+                .promptCommandFor(
+                    "server-a",
+                    "same"
+                )
+
+        assertNotEquals(tool, resource)
+        assertNotEquals(tool, prompt)
+        assertNotEquals(resource, prompt)
+        assertTrue(
+            resource.startsWith(
+                "mcpres__"
+            )
+        )
+        assertTrue(
+            prompt.startsWith(
+                "mcpprompt__"
+            )
+        )
+    }
+
 }
