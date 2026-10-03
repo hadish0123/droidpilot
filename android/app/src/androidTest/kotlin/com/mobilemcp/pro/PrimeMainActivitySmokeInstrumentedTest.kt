@@ -1,6 +1,5 @@
 package com.mobilemcp.pro
 
-import android.app.Activity
 import android.view.View
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -40,18 +39,21 @@ class PrimeMainActivitySmokeInstrumentedTest {
                     activity.findViewById<View>(
                         android.R.id.content
                     )
+                val composer =
+                    activity.findViewById<View>(
+                        R.id.etMessage
+                    )
+
                 assertNotNull(content)
+                assertNotNull(composer)
                 assertTrue(
-                    content.width >= 0
+                    content.isAttachedToWindow
                 )
                 assertEquals(
-                    Activity.RESULT_CANCELED,
-                    activity.resultCodeForSmokeTest()
+                    View.VISIBLE,
+                    composer.visibility
                 )
             }
         }
     }
-
-    private fun Activity.resultCodeForSmokeTest():
-        Int = Activity.RESULT_CANCELED
 }
