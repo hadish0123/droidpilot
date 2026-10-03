@@ -38,7 +38,9 @@ jobs:
           test -s app/build/outputs/apk/debug/app-debug.apk
           test -s app/build/outputs/apk/release/app-release-unsigned.apk
           cp app/build/outputs/apk/debug/app-debug.apk /tmp/PRIME-P6-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/PRIME-P6-installable.apk
           cp app/build/outputs/apk/release/app-release-unsigned.apk /tmp/PRIME-P6-release-unsigned.apk
+          sha256sum /tmp/PRIME-P6-installable.apk > /tmp/PRIME-P6-installable.sha256
 
       - name: Upload PRIME P6 APK
         uses: actions/upload-artifact@v4
@@ -47,6 +49,16 @@ jobs:
           path: |
             /tmp/PRIME-P6-debug.apk
             /tmp/PRIME-P6-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload installable PRIME P6 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PRIME-P6-INSTALLABLE
+          path: |
+            /tmp/PRIME-P6-installable.apk
+            /tmp/PRIME-P6-installable.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -92,8 +104,37 @@ jobs:
           working-directory: ./android
           disable-animations: true
           script: |
+            set -eu
             chmod +x ./gradlew
-            ./gradlew --no-daemon connectedDebugAndroidTest
+            ./gradlew --no-daemon connectedDebugAndroidTest assembleDebug
+
+            mkdir -p ../device-smoke
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb logcat -c
+            adb shell am force-stop com.mobilemcp.pro
+            adb shell am start -W -n com.mobilemcp.pro/.MainActivity | tee ../device-smoke/am-start.txt
+            grep -q "Status: ok" ../device-smoke/am-start.txt
+
+            sleep 4
+            test -n "$(adb shell pidof com.mobilemcp.pro | tr -d '\r')"
+            adb shell dumpsys activity activities > ../device-smoke/activity.txt
+            grep -q "com.mobilemcp.pro/.MainActivity" ../device-smoke/activity.txt
+
+            adb exec-out screencap -p > ../device-smoke/launch.png
+            adb shell uiautomator dump /sdcard/prime-window.xml
+            adb pull /sdcard/prime-window.xml ../device-smoke/window.xml
+            adb logcat -d -t 800 > ../device-smoke/logcat.txt
+
+            ! grep -E "FATAL EXCEPTION.*com\\.mobilemcp\\.pro|Process: com\\.mobilemcp\\.pro" ../device-smoke/logcat.txt
+
+      - name: Upload install/launch smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PRIME-install-launch-smoke
+          path: device-smoke/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload instrumentation reports
         if: always()
