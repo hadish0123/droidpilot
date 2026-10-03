@@ -18,7 +18,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 - Android-side multi-server MCP client with encrypted server/token storage and 2026/2025 protocol negotiation
 - Installable PRIME Plugin manifests (prime.plugin.v1) with enable/disable/uninstall lifecycle backed by the MCP runtime
 - One-time and recurring background Tasks using WorkManager, including local reminders and network-constrained AI Briefs
-- Discovered MCP tools, resources and prompts can enter PRIME's agent loop through namespaced, risk-gated external capabilities; resource/prompt output remains untrusted data
+- Configurable local cost estimates by provider/model rate; pricing is user-supplied and never assumed from stale vendor tables\n- Discovered MCP tools, resources and prompts can enter PRIME's agent loop through namespaced, risk-gated external capabilities; resource/prompt output remains untrusted data
 - Voice command → Android speech recognition → PRIME
 - Offline Persian voice replies with an embedded sherpa-onnx/Piper engine
 - **Continue with ChatGPT** for eligible ChatGPT Plus / Pro plan usage
