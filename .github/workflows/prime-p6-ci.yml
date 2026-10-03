@@ -30,18 +30,23 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Build PRIME P6 debug APK
+      - name: Build and verify PRIME P6 APKs
         working-directory: android
         run: |
           chmod +x ./gradlew
-          ./gradlew --no-daemon clean testDebugUnitTest assembleDebug lintDebug
+          ./gradlew --no-daemon clean testDebugUnitTest assembleDebug lintDebug assembleRelease lintRelease
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
           cp app/build/outputs/apk/debug/app-debug.apk /tmp/PRIME-P6-debug.apk
+          cp app/build/outputs/apk/release/app-release-unsigned.apk /tmp/PRIME-P6-release-unsigned.apk
 
       - name: Upload PRIME P6 APK
         uses: actions/upload-artifact@v4
         with:
           name: PRIME-P6-APK
-          path: /tmp/PRIME-P6-debug.apk
+          path: |
+            /tmp/PRIME-P6-debug.apk
+            /tmp/PRIME-P6-release-unsigned.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -53,6 +58,8 @@ jobs:
           path: |
             android/app/build/reports/tests/
             android/app/build/reports/lint-results-debug.html
+            android/app/build/reports/lint-results-release.html
+            android/app/build/reports/lint-results-release.html
 
   mcp:
     name: MCP bridge
