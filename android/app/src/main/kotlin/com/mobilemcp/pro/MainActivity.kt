@@ -65,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var authManager: OpenAIAuthManager
     private lateinit var primeAgent: PrimeAgent
     private lateinit var chatStore: PrimeChatStore
+    private lateinit var memoryStore: PrimeMemoryStore
     private lateinit var bridgeSecurity: DeviceBridgeSecurity
     private lateinit var remoteBridgeSecurity: RemoteBridgeSecurity
     private var bridgeAuthToken: String = ""
@@ -95,7 +96,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         authManager = OpenAIAuthManager(applicationContext)
-        primeAgent = PrimeAgent(authManager)
+        memoryStore = PrimeMemoryStore(applicationContext)
+        primeAgent = PrimeAgent(authManager, memoryStore)
         chatStore = PrimeChatStore(applicationContext)
         bridgeSecurity = DeviceBridgeSecurity(SecureStore(applicationContext))
         bridgeAuthToken = bridgeSecurity.getOrCreateToken()
@@ -728,6 +730,11 @@ class MainActivity : AppCompatActivity() {
             appendChat("شما", input)
         }
 
+        if (handleMemoryCommand(input, fromVoiceMode)) {
+            pendingConfirmationTask = null
+            return
+        }
+
         var task = input
         var confirmed = false
         val pending = pendingConfirmationTask
@@ -898,6 +905,65 @@ class MainActivity : AppCompatActivity() {
 
         binding.tvAgentStatus.text = getString(R.string.ui_stopping_generation)
         job.cancel(CancellationException("Stopped by user"))
+    }
+
+    private fun handleMemoryCommand(
+        input: String,
+        fromVoiceMode: Boolean
+    ): Boolean {
+        val command = PrimeMemoryCommandParser.parse(input) ?: return false
+
+        if (fromVoiceMode) {
+            appendChat("شما", input)
+        }
+
+        val response = when (command) {
+            is PrimeMemoryCommand.Remember -> {
+                val item = memoryStore.remember(
+                    kind = command.kind,
+                    content = command.content,
+                    sourceChatId = currentChatId.takeIf { it > 0L }
+                )
+                val label = when (item.kind) {
+                    PrimeMemoryKind.FACT -> "واقعیت"
+                    PrimeMemoryKind.PREFERENCE -> "ترجیح"
+                    PrimeMemoryKind.PROJECT -> "پروژه"
+                }
+                "به حافظهٔ رمز‌شدهٔ PRIME اضافه شد ($label): " +
+                    item.content.take(180)
+            }
+
+            is PrimeMemoryCommand.Forget -> {
+                val removed = memoryStore.forgetMatching(command.query)
+                if (removed > 0) {
+                    "$removed مورد مرتبط از حافظهٔ PRIME حذف شد."
+                } else {
+                    "مورد مرتبطی در حافظهٔ PRIME پیدا نشد."
+                }
+            }
+
+            PrimeMemoryCommand.ListMemories -> {
+                val memories = memoryStore.list(limit = 8)
+                if (memories.isEmpty()) {
+                    "حافظهٔ بلندمدت PRIME خالی است."
+                } else {
+                    buildString {
+                        appendLine("چیزهایی که به درخواست تو در حافظه نگه داشته‌ام:")
+                        memories.forEach { memory ->
+                            append("• ")
+                            appendLine(memory.content.take(180))
+                        }
+                    }.trim()
+                }
+            }
+        }
+
+        appendChat("PRIME", response)
+        if (fromVoiceMode) {
+            binding.tvVoiceStatus.text = response.take(160)
+            speak(response)
+        }
+        return true
     }
 
     private fun userFriendlyError(e: Exception): String {
@@ -1450,7 +1516,8 @@ class MainActivity : AppCompatActivity() {
             if (authManager.isSignedIn()) "حساب ChatGPT" else "اتصال ChatGPT",
             "کنترل گوشی",
             "تنظیمات گوشی",
-            "پل اتصال دستگاه"
+            "پل اتصال دستگاه",
+            "حافظهٔ PRIME"
         )
 
         AlertDialog.Builder(this)
@@ -1467,9 +1534,55 @@ class MainActivity : AppCompatActivity() {
                     1 -> startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     2 -> startActivity(Intent(Settings.ACTION_SETTINGS))
                     3 -> binding.drawerLayout.openDrawer(Gravity.RIGHT)
+                    4 -> showMemoryManager()
                 }
             }
             .show()
+    }
+
+    private fun showMemoryManager() {
+        val memories = memoryStore.list(limit = 20)
+        val message = if (memories.isEmpty()) {
+            "حافظهٔ بلندمدت PRIME خالی است.\n\n" +
+                "مثال: «یادت باشه پاسخ‌های کوتاه رو ترجیح میدم»"
+        } else {
+            buildString {
+                appendLine("حافظه‌ها فقط با درخواست صریح تو ذخیره می‌شوند و با Android Keystore رمز می‌شوند.")
+                appendLine()
+                memories.forEachIndexed { index, memory ->
+                    append(index + 1)
+                    append(". ")
+                    appendLine(memory.content.take(220))
+                }
+            }.trim()
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("حافظهٔ PRIME")
+            .setMessage(message)
+            .setPositiveButton("بستن", null)
+
+        if (memories.isNotEmpty()) {
+            dialog.setNegativeButton("پاک کردن همه") { _, _ ->
+                AlertDialog.Builder(this)
+                    .setTitle("همهٔ حافظه‌ها پاک شوند؟")
+                    .setMessage(
+                        "حافظهٔ بلندمدت PRIME پاک می‌شود؛ تاریخچهٔ چت‌ها حذف نمی‌شود."
+                    )
+                    .setPositiveButton("پاک کردن") { _, _ ->
+                        memoryStore.clear()
+                        Toast.makeText(
+                            this,
+                            "حافظهٔ PRIME پاک شد",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    .setNegativeButton("لغو", null)
+                    .show()
+            }
+        }
+
+        dialog.show()
     }
 
     private fun setBusy(busy: Boolean, status: String? = null) {
