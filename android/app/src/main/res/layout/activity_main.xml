@@ -219,6 +219,24 @@
                         app:iconTint="@color/on_primary" />
 
                     <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnStop"
+                        android:layout_width="48dp"
+                        android:layout_height="48dp"
+                        android:layout_gravity="center_vertical"
+                        android:contentDescription="@string/ui_stop_generation"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:text=""
+                        android:visibility="gone"
+                        app:backgroundTint="@color/primary"
+                        app:cornerRadius="24dp"
+                        app:icon="@drawable/ic_close_prime"
+                        app:iconGravity="textStart"
+                        app:iconPadding="0dp"
+                        app:iconTint="@color/on_primary" />
+
+                    <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnSend"
                         android:layout_width="48dp"
                         android:layout_height="48dp"

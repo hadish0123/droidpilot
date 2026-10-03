@@ -6,12 +6,13 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 
 ## What PRIME P6 does
 
-- Chat directly inside the Android app
+- Chat directly inside the Android app with live streamed text and user-controlled Stop generation
 - Voice command → Android speech recognition → PRIME
 - Offline Persian voice replies with an embedded sherpa-onnx/Piper engine
 - **Continue with ChatGPT** for eligible ChatGPT Plus / Pro plan usage
 - No OpenAI API key required for the supported open-source plan-sharing flow
 - Native Android UI-tree reading through Accessibility Service
+- Coroutine-aware generation cancellation that propagates through provider streaming without replaying partial output
 - Tap, long press, swipe, scroll, type and replace text
 - Open installed apps by friendly name
 - Open web URLs

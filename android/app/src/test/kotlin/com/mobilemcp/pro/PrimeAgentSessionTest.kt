@@ -5,6 +5,10 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -356,6 +360,53 @@ class PrimeAgentSessionTest {
             assertTrue(serialized.contains("assistant-history-99"))
             assertFalse(serialized.contains("user-history-0"))
         }
+    }
+
+
+    @Test fun cancellingAProviderTurnPropagatesWithoutProducingAReply() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val provider = object : AiProvider {
+            override val providerId = "cancellable-provider"
+            override fun isAvailable() = true
+            override suspend fun listModels(forceRefresh: Boolean) =
+                listOf(AiModel("cancel_luna", "Cancel Luna"))
+
+            override suspend fun streamText(
+                request: AiTextRequest,
+                onTextDelta: ((String) -> Unit)?
+            ): String {
+                onTextDelta?.invoke("partial ")
+                started.complete(Unit)
+                awaitCancellation()
+            }
+        }
+
+        val deltas = mutableListOf<String>()
+        var completed = false
+        val agent = PrimeAgent(provider)
+
+        val job = launch {
+            try {
+                agent.run(
+                    userText = "یک پاسخ طولانی بده",
+                    confirmedForTask = false,
+                    uiProvider = { error("Normal chat must not read UI") },
+                    actionRunner = { _, _ -> error("Normal chat must not act") },
+                    onProgress = {},
+                    onTextDelta = { deltas += it }
+                )
+                completed = true
+            } catch (_: CancellationException) {
+                // Expected user stop.
+            }
+        }
+
+        started.await()
+        job.cancelAndJoin()
+
+        assertFalse(completed)
+        assertTrue(job.isCancelled)
+        assertEquals(listOf("partial "), deltas)
     }
 
 
