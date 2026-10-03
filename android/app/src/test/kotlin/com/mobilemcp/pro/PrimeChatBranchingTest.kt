@@ -25,15 +25,16 @@ class PrimeChatBranchingTest {
     }
 
     @Test
-    fun edit_and_regenerate_use_forks_not_history_deletion() {
+    fun edit_and_regenerate_continue_on_new_conversations() {
         val source = File(
             "src/main/kotlin/com/mobilemcp/pro/MainActivity.kt"
         ).readText()
 
+        assertTrue(source.contains("fun editAndBranchMessage("))
+        assertTrue(source.contains("fun regenerateInBranch("))
         assertTrue(source.contains("\" · edit\""))
         assertTrue(source.contains("\" · regenerate\""))
-        assertTrue(source.contains("forkBeforeMessage("))
-        assertTrue(source.contains("forkThroughMessage("))
+        assertTrue(source.contains("chatStore.forkBeforeMessage("))
         assertFalse(source.contains("deleteMessagesAfter("))
     }
 }
