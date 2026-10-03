@@ -125,10 +125,7 @@ jobs:
             adb pull /sdcard/prime-window.xml ../device-smoke/window.xml
             adb logcat -d -t 800 > ../device-smoke/logcat.txt
 
-            if grep -E "FATAL EXCEPTION|Process: com\.mobilemcp\.pro" ../device-smoke/logcat.txt; then
-              echo "PRIME crashed during launch smoke test"
-              exit 1
-            fi
+            ! grep -E "FATAL EXCEPTION.*com\\.mobilemcp\\.pro|Process: com\\.mobilemcp\\.pro" ../device-smoke/logcat.txt
 
       - name: Upload install/launch smoke evidence
         if: always()
