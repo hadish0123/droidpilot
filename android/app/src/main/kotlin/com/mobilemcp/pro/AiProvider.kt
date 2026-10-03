@@ -35,6 +35,12 @@ internal data class AiWebResult(
     val citations: List<AiWebCitation>
 )
 
+internal data class AiImageInput(
+    val name: String,
+    val mimeType: String,
+    val dataUrl: String
+)
+
 /**
  * Boundary between PRIME orchestration and any model backend.
  *
@@ -62,6 +68,18 @@ internal interface AiProvider {
     ): AiWebResult {
         throw UnsupportedOperationException(
             "Web search is not supported by this provider"
+        )
+    }
+
+    val supportsVision: Boolean
+        get() = false
+
+    suspend fun analyzeImages(
+        request: AiTextRequest,
+        images: List<AiImageInput>
+    ): String {
+        throw UnsupportedOperationException(
+            "Vision is not supported by this provider"
         )
     }
 
