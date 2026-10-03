@@ -176,6 +176,18 @@ Never wrap JSON in markdown fences.
         onProgress: (String) -> Unit,
         onTextDelta: ((String) -> Unit)? = null
     ): PrimeOutcome {
+        PrimeUtilityRuntime.tryHandle(
+            userText
+        )?.let { utility ->
+            remember(
+                userText,
+                utility.text
+            )
+            return PrimeOutcome(
+                utility.text
+            )
+        }
+
         // Local commands remain executable on every turn, independently of
         // model replies, network quota or conversation history.
         PersianInput.simpleKeyTarget(userText)?.let { key ->
