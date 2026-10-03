@@ -505,7 +505,8 @@ internal class PrimeTaskScheduler(
                     )
                     .build()
             } else {
-                Constraints.NONE
+                Constraints.Builder()
+                    .build()
             }
 
         when (task.scheduleKind) {
