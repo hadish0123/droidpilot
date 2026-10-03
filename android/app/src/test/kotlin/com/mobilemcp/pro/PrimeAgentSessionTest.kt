@@ -515,4 +515,29 @@ class PrimeAgentSessionTest {
     }
 
 
+    @Test fun calculatorBypassesProviderAndPhoneRuntime() = runBlocking {
+        val credentials = object : PrimeCredentials {
+            override fun isSignedIn() = false
+            override suspend fun accessToken() =
+                error("Calculator must not request a token")
+        }
+
+        val outcome = PrimeAgent(
+            credentials
+        ).run(
+            userText = "حساب کن (12 + 8) / 4",
+            confirmedForTask = false,
+            uiProvider = {
+                error("Calculator must not read UI")
+            },
+            actionRunner = { _, _ ->
+                error("Calculator must not run phone actions")
+            },
+            onProgress = {}
+        )
+
+        assertEquals("5", outcome.text)
+    }
+
+
 }
