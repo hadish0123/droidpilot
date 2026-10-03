@@ -755,7 +755,9 @@ internal class PrimeMcpClient(
 
             val responseBody = input
                 ?.bufferedReader(Charsets.UTF_8)
-                ?.use(::readBounded)
+                ?.use { reader ->
+                    readBounded(reader)
+                }
                 .orEmpty()
 
             if (status !in 200..299) {
