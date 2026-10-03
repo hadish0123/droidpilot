@@ -67,6 +67,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var primeAgent: PrimeAgent
     private lateinit var chatStore: PrimeChatStore
     private lateinit var memoryStore: PrimeMemoryStore
+    private lateinit var mcpServerStore: PrimeMcpServerStore
+    private lateinit var mcpClient: PrimeMcpClient
+    private val mcpDiscoveryCache =
+        mutableMapOf<String, PrimeMcpDiscovery>()
     private val attachmentSession = PrimeAttachmentSession()
     private val documentPipeline by lazy {
         PrimeDocumentPipeline(applicationContext)
@@ -107,6 +111,10 @@ class MainActivity : AppCompatActivity() {
 
         authManager = OpenAIAuthManager(applicationContext)
         memoryStore = PrimeMemoryStore(applicationContext)
+        mcpServerStore = PrimeMcpServerStore(applicationContext)
+        mcpClient = PrimeMcpClient(
+            clientVersion = appVersionName()
+        )
         primeAgent = PrimeAgent(
             authManager,
             memoryStore,
@@ -1534,7 +1542,8 @@ class MainActivity : AppCompatActivity() {
             "پل اتصال دستگاه",
             "حافظهٔ PRIME",
             "افزودن فایل",
-            "فایل‌های این چت"
+            "فایل‌های این چت",
+            "MCP Servers"
         )
 
         AlertDialog.Builder(this)
@@ -1554,9 +1563,372 @@ class MainActivity : AppCompatActivity() {
                     4 -> showMemoryManager()
                     5 -> pickDocument()
                     6 -> showAttachmentManager()
+                    7 -> showMcpServers()
                 }
             }
             .show()
+    }
+
+    private fun showMcpServers() {
+        val servers = mcpServerStore.list()
+
+        if (servers.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("MCP Servers")
+                .setMessage(
+                    "هنوز MCP Server اضافه نشده. " +
+                        "برای server راه‌دور HTTPS و برای localhost " +
+                        "HTTP/HTTPS قابل استفاده است."
+                )
+                .setPositiveButton("افزودن Server") { _, _ ->
+                    showAddMcpServerDialog()
+                }
+                .setNegativeButton("بستن", null)
+                .show()
+            return
+        }
+
+        val labels = servers.map { server ->
+            val discovery =
+                mcpDiscoveryCache[server.id]
+            val status = when {
+                !server.enabled -> "خاموش"
+                discovery != null ->
+                    discovery.protocolVersion +
+                        " · " +
+                        discovery.tools.size +
+                        " tools"
+                else -> "ذخیره‌شده"
+            }
+            server.name + " · " + status
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("MCP Servers")
+            .setItems(labels) { _, which ->
+                showMcpServerDetails(
+                    servers[which]
+                )
+            }
+            .setPositiveButton("افزودن") { _, _ ->
+                showAddMcpServerDialog()
+            }
+            .setNeutralButton("تست همه") { _, _ ->
+                discoverAllMcpServers()
+            }
+            .setNegativeButton("بستن", null)
+            .show()
+    }
+
+    private fun showAddMcpServerDialog() {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                dp(24),
+                dp(8),
+                dp(24),
+                dp(4)
+            )
+        }
+
+        val nameInput =
+            android.widget.EditText(this).apply {
+                hint = "نام Server"
+                maxLines = 1
+            }
+        val urlInput =
+            android.widget.EditText(this).apply {
+                hint = "https://example.com/mcp"
+                inputType =
+                    android.text.InputType.TYPE_CLASS_TEXT or
+                        android.text.InputType.TYPE_TEXT_VARIATION_URI
+                maxLines = 2
+            }
+        val tokenInput =
+            android.widget.EditText(this).apply {
+                hint = "Bearer token (اختیاری)"
+                inputType =
+                    android.text.InputType.TYPE_CLASS_TEXT or
+                        android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                maxLines = 1
+            }
+
+        panel.addView(nameInput)
+        panel.addView(urlInput)
+        panel.addView(tokenInput)
+
+        AlertDialog.Builder(this)
+            .setTitle("افزودن MCP Server")
+            .setView(panel)
+            .setPositiveButton("ذخیره و تست") { _, _ ->
+                try {
+                    val saved = mcpServerStore.save(
+                        name = nameInput.text
+                            ?.toString()
+                            .orEmpty(),
+                        url = urlInput.text
+                            ?.toString()
+                            .orEmpty(),
+                        bearerToken = tokenInput.text
+                            ?.toString()
+                    )
+                    discoverMcpServer(saved)
+                } catch (e: Exception) {
+                    appendChat(
+                        "PRIME",
+                        "MCP Server ذخیره نشد: " +
+                            (e.message ?: "تنظیم نامعتبر"),
+                        persist = false
+                    )
+                }
+            }
+            .setNegativeButton("لغو", null)
+            .show()
+    }
+
+    private fun showMcpServerDetails(
+        server: PrimeMcpServerConfig
+    ) {
+        val discovery =
+            mcpDiscoveryCache[server.id]
+
+        val details = buildString {
+            appendLine(server.url)
+            appendLine()
+            append("وضعیت: ")
+            appendLine(
+                if (server.enabled) "فعال" else "غیرفعال"
+            )
+
+            if (discovery != null) {
+                append("Protocol: ")
+                appendLine(discovery.protocolVersion)
+                append("Era: ")
+                appendLine(discovery.era.name)
+                discovery.remoteServerName?.let {
+                    append("Server: ")
+                    append(it)
+                    discovery.remoteServerVersion?.let {
+                        version ->
+                        append(" ")
+                        append(version)
+                    }
+                    appendLine()
+                }
+                appendLine()
+                append("Tools: ")
+                appendLine(discovery.tools.size.toString())
+                discovery.tools.take(12).forEach {
+                    append("• ")
+                    appendLine(it.name)
+                }
+                append("Resources: ")
+                appendLine(
+                    discovery.resources.size.toString()
+                )
+                discovery.resources.take(8).forEach {
+                    append("• ")
+                    appendLine(
+                        it.name ?: it.uri
+                    )
+                }
+                append("Prompts: ")
+                appendLine(
+                    discovery.prompts.size.toString()
+                )
+                discovery.prompts.take(8).forEach {
+                    append("• ")
+                    appendLine(it.name)
+                }
+            } else {
+                appendLine(
+                    "هنوز discovery اجرا نشده است."
+                )
+            }
+        }.trim()
+
+        AlertDialog.Builder(this)
+            .setTitle(server.name)
+            .setMessage(details)
+            .setPositiveButton("Test / Refresh") { _, _ ->
+                discoverMcpServer(server)
+            }
+            .setNeutralButton(
+                if (server.enabled) "غیرفعال" else "فعال"
+            ) { _, _ ->
+                mcpServerStore.setEnabled(
+                    server.id,
+                    !server.enabled
+                )
+                if (server.enabled) {
+                    mcpDiscoveryCache.remove(server.id)
+                }
+            }
+            .setNegativeButton("حذف") { _, _ ->
+                confirmRemoveMcpServer(server)
+            }
+            .show()
+    }
+
+    private fun confirmRemoveMcpServer(
+        server: PrimeMcpServerConfig
+    ) {
+        AlertDialog.Builder(this)
+            .setTitle("حذف MCP Server؟")
+            .setMessage(
+                server.name + "\n" + server.url
+            )
+            .setPositiveButton("حذف") { _, _ ->
+                mcpServerStore.remove(server.id)
+                mcpDiscoveryCache.remove(server.id)
+            }
+            .setNegativeButton("لغو", null)
+            .show()
+    }
+
+    private fun discoverAllMcpServers() {
+        val enabled = mcpServerStore
+            .list()
+            .filter { it.enabled }
+
+        if (enabled.isEmpty()) {
+            appendChat(
+                "PRIME",
+                "MCP Server فعالی وجود ندارد.",
+                persist = false
+            )
+            return
+        }
+
+        setBusy(
+            true,
+            "در حال بررسی MCP Serverها…"
+        )
+        appScope.launch {
+            var ok = 0
+            val failures = mutableListOf<String>()
+
+            try {
+                enabled.forEach { server ->
+                    try {
+                        val discovery =
+                            withContext(
+                                Dispatchers.IO
+                            ) {
+                                mcpClient.discover(
+                                    server
+                                )
+                            }
+                        mcpDiscoveryCache[
+                            server.id
+                        ] = discovery
+                        ok += 1
+                    } catch (e: Exception) {
+                        failures +=
+                            server.name + ": " +
+                                (
+                                    e.message
+                                        ?: "connection failed"
+                                    ).take(180)
+                    }
+                }
+
+                val summary = buildString {
+                    append(ok)
+                    append("/")
+                    append(enabled.size)
+                    append(
+                        " MCP Server متصل شد."
+                    )
+                    if (failures.isNotEmpty()) {
+                        appendLine()
+                        failures.forEach {
+                            appendLine("• $it")
+                        }
+                    }
+                }.trim()
+
+                appendChat(
+                    "PRIME",
+                    summary,
+                    persist = false
+                )
+            } finally {
+                setBusy(false)
+            }
+        }
+    }
+
+    private fun discoverMcpServer(
+        server: PrimeMcpServerConfig
+    ) {
+        if (!server.enabled) {
+            appendChat(
+                "PRIME",
+                "این MCP Server غیرفعال است.",
+                persist = false
+            )
+            return
+        }
+
+        setBusy(
+            true,
+            "در حال MCP discovery…"
+        )
+        appScope.launch {
+            try {
+                val discovery =
+                    withContext(Dispatchers.IO) {
+                        mcpClient.discover(
+                            server
+                        )
+                    }
+
+                mcpDiscoveryCache[
+                    server.id
+                ] = discovery
+
+                appendChat(
+                    "PRIME",
+                    buildString {
+                        append("MCP متصل شد: ")
+                        appendLine(server.name)
+                        append("Protocol: ")
+                        appendLine(
+                            discovery.protocolVersion
+                        )
+                        append("Tools: ")
+                        append(
+                            discovery.tools.size
+                        )
+                        append(" · Resources: ")
+                        append(
+                            discovery.resources.size
+                        )
+                        append(" · Prompts: ")
+                        append(
+                            discovery.prompts.size
+                        )
+                    },
+                    persist = false
+                )
+            } catch (e: Exception) {
+                mcpDiscoveryCache.remove(
+                    server.id
+                )
+                appendChat(
+                    "PRIME",
+                    "MCP connection failed: " +
+                        (
+                            e.message
+                                ?: "unknown error"
+                            ).take(500),
+                    persist = false
+                )
+            } finally {
+                setBusy(false)
+            }
+        }
     }
 
     private fun pickDocument() {
