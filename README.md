@@ -7,6 +7,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 ## What PRIME P6 does
 
 - Chat directly inside the Android app with live streamed text and user-controlled Stop generation
+- Durable chat productivity: non-destructive schema migration, pin/archive, full-text conversation search, rename and plain-text export/share
 - Provider registry for ChatGPT Plan, OpenRouter, Google Gemini, Anthropic Claude and OpenAI-compatible local/custom endpoints
 - Local Developer / Usage observability for provider calls, latency, failures and estimated input/output tokens
 - Fresh-information queries can use the Responses API hosted web search tool with visible source URLs
@@ -37,6 +38,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 PRIME is designed local-first:
 
 - ChatGPT OAuth tokens are encrypted with the Android Keystore before being stored.
+- Chat history stays in the local SQLite conversation store. Schema upgrades are additive; archived/pinned state and message-search metadata do not require destructive table recreation.
 - External provider profiles and API keys are also stored inside Android Keystore-backed SecureStore. Remote custom endpoints must use HTTPS; HTTP is limited to literal loopback development endpoints.
 - Usage telemetry stores no prompt or response bodies. It records only local request metadata such as provider, operation, model, latency, success/failure and approximate token counts, and can be cleared from the app.
 - Explicit PRIME long-term memories are also encrypted with Android Keystore; PRIME does not silently extract memories from every conversation.
