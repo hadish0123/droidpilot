@@ -44,6 +44,8 @@ internal class OpenAIResponsesProvider(
 
     override val supportsWebSearch: Boolean = true
 
+    override val supportsVision: Boolean = true
+
     private val modelMutex = Mutex()
 
     @Volatile
@@ -254,6 +256,183 @@ internal class OpenAIResponsesProvider(
         }
     }
 
+    override suspend fun analyzeImages(
+        request: AiTextRequest,
+        images: List<AiImageInput>
+    ): String {
+        require(images.isNotEmpty()) {
+            "At least one image is required"
+        }
+
+        return withNetworkRetry(
+            "vision"
+        ) {
+            val token = auth.accessToken()
+            coroutineContext.ensureActive()
+
+            val input = JSONArray()
+            val prior =
+                if (
+                    request.messages.isEmpty()
+                ) {
+                    emptyList()
+                } else {
+                    request.messages
+                        .dropLast(1)
+                }
+
+            prior.forEach { message ->
+                input.put(
+                    JSONObject()
+                        .put(
+                            "role",
+                            message.role
+                        )
+                        .put(
+                            "content",
+                            message.content
+                        )
+                )
+            }
+
+            val prompt = request.messages
+                .lastOrNull()
+                ?.content
+                .orEmpty()
+            val content = JSONArray()
+                .put(
+                    JSONObject()
+                        .put(
+                            "type",
+                            "input_text"
+                        )
+                        .put(
+                            "text",
+                            prompt
+                        )
+                )
+
+            images.take(4).forEach {
+                image ->
+                content.put(
+                    JSONObject()
+                        .put(
+                            "type",
+                            "input_image"
+                        )
+                        .put(
+                            "image_url",
+                            image.dataUrl
+                        )
+                        .put(
+                            "detail",
+                            "auto"
+                        )
+                )
+            }
+
+            input.put(
+                JSONObject()
+                    .put(
+                        "role",
+                        "user"
+                    )
+                    .put(
+                        "content",
+                        content
+                    )
+            )
+
+            val body = JSONObject()
+                .put(
+                    "model",
+                    request.model
+                )
+                .put(
+                    "instructions",
+                    request.instructions
+                )
+                .put("input", input)
+                .put("store", false)
+                .put("stream", false)
+
+            val conn = URL(
+                endpoints.responses
+            ).openConnection()
+                as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.connectTimeout = 12_000
+            conn.readTimeout = 90_000
+            conn.setRequestProperty(
+                "Authorization",
+                "Bearer " + token
+            )
+            conn.setRequestProperty(
+                "Content-Type",
+                "application/json"
+            )
+            conn.setRequestProperty(
+                "Accept",
+                "application/json"
+            )
+            conn.setRequestProperty(
+                "User-Agent",
+                USER_AGENT
+            )
+
+            val bytes = body.toString()
+                .toByteArray(
+                    Charsets.UTF_8
+                )
+            conn.setFixedLengthStreamingMode(
+                bytes.size
+            )
+
+            try {
+                conn.outputStream.use {
+                    it.write(bytes)
+                }
+                val status =
+                    conn.responseCode
+                val responseBody =
+                    (
+                        if (
+                            status in 200..299
+                        ) {
+                            conn.inputStream
+                        } else {
+                            conn.errorStream
+                        }
+                    )
+                        ?.bufferedReader(
+                            Charsets.UTF_8
+                        )
+                        ?.use {
+                            it.readText()
+                        }
+                        .orEmpty()
+
+                if (
+                    status !in 200..299
+                ) {
+                    throw apiError(
+                        status,
+                        responseBody
+                    )
+                }
+
+                coroutineContext
+                    .ensureActive()
+                parseResponseText(
+                    responseBody
+                )
+            } finally {
+                conn.disconnect()
+            }
+        }
+    }
+
     override suspend fun streamText(
         request: AiTextRequest,
         onTextDelta: ((String) -> Unit)?
@@ -329,6 +508,74 @@ internal class OpenAIResponsesProvider(
                 conn.disconnect()
             }
         }
+    }
+
+    private fun parseResponseText(
+        raw: String
+    ): String {
+        val root = JSONObject(raw)
+        val output =
+            root.optJSONArray("output")
+                ?: JSONArray()
+        val text = StringBuilder()
+
+        for (
+            outputIndex in 0
+                until output.length()
+        ) {
+            val item =
+                output.optJSONObject(
+                    outputIndex
+                ) ?: continue
+            if (
+                item.optString(
+                    "type"
+                ) != "message"
+            ) {
+                continue
+            }
+
+            val content =
+                item.optJSONArray(
+                    "content"
+                ) ?: JSONArray()
+            for (
+                contentIndex in 0
+                    until content.length()
+            ) {
+                val part =
+                    content.optJSONObject(
+                        contentIndex
+                    ) ?: continue
+                if (
+                    part.optString(
+                        "type"
+                    ) != "output_text"
+                ) {
+                    continue
+                }
+
+                val value =
+                    part.optString("text")
+                if (value.isNotBlank()) {
+                    if (
+                        text.isNotEmpty()
+                    ) {
+                        text.appendLine()
+                    }
+                    text.append(value)
+                }
+            }
+        }
+
+        return text
+            .toString()
+            .trim()
+            .ifBlank {
+                throw IllegalStateException(
+                    "Vision returned no text result"
+                )
+            }
     }
 
     private fun parseWebResult(
