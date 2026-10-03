@@ -1269,7 +1269,7 @@ class MainActivity : AppCompatActivity() {
                             contentResolver
                                 .openOutputStream(
                                     uri,
-                                    "wt"
+                                    "w"
                                 )
                                 ?: throw IllegalStateException(
                                     "فایل خروجی قابل نوشتن نیست."
