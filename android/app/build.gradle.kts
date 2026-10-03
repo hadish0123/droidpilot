@@ -92,7 +92,7 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.drawerlayout:drawerlayout:1.2.0")
-    implementation("androidx.work:work-runtime-ktx:2.12.0")
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("org.java-websocket:Java-WebSocket:1.5.6")
     implementation("com.google.code.gson:gson:2.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
