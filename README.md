@@ -12,6 +12,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 - Session attachments with local text extraction for PDF, TXT/MD, CSV, JSON, DOCX, XLSX and PPTX
 - Session image attachments (PNG/JPEG/WEBP) with Responses API vision analysis
 - Android-side multi-server MCP client with encrypted server/token storage and 2026/2025 protocol negotiation
+- Installable PRIME Plugin manifests (prime.plugin.v1) with enable/disable/uninstall lifecycle backed by the MCP runtime
 - Discovered MCP tools can enter PRIME's agent loop through a namespaced, risk-gated external tool runtime
 - Voice command → Android speech recognition → PRIME
 - Offline Persian voice replies with an embedded sherpa-onnx/Piper engine
@@ -41,6 +42,7 @@ PRIME is designed local-first:
 - Images remain in the active in-memory chat session and are sent to the provider only for a visual-analysis request. Visible instructions inside images are explicitly treated as untrusted data.
 - The optional Device Bridge is off until the user starts it.
 - MCP server URLs and bearer tokens configured inside PRIME are encrypted with Android Keystore. Remote MCP endpoints must use HTTPS; cleartext is restricted to loopback localhost.
+- PRIME Plugin manifests never execute arbitrary local code. They declare an MCP runtime and capabilities; secrets are entered separately and stored in the encrypted MCP credential store.
 - Device Bridge commands require a per-install 256-bit bearer token stored through Android Keystore.
 - The Accessibility Service is off until the user enables it.
 - PRIME does not need an OpenAI API key.
