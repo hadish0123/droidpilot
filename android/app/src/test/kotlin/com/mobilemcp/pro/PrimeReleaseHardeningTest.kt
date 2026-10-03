@@ -22,8 +22,18 @@ class PrimeReleaseHardeningTest {
     }
 
     @Test
+    fun gradle_distribution_is_checksum_pinned() {
+        val wrapper = File("../gradle/wrapper/gradle-wrapper.properties").readText()
+        assertTrue(
+            wrapper.contains(
+                "distributionSha256Sum=9d926787066a081739e8200858338b4a69e837c3a821a33aca9db09dd4a41026"
+            )
+        )
+    }
+
+    @Test
     fun release_ci_builds_release_and_runs_release_lint() {
-        val workflow = File("../.github/workflows/prime-p6-ci.yml").readText()
+        val workflow = File("../../.github/workflows/prime-p6-ci.yml").readText()
         assertTrue(workflow.contains("assembleRelease"))
         assertTrue(workflow.contains("lintRelease"))
         assertTrue(workflow.contains("app-release-unsigned.apk"))
