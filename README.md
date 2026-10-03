@@ -7,6 +7,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 ## What PRIME P6 does
 
 - Chat directly inside the Android app with live streamed text and user-controlled Stop generation
+- Explicit long-term memory for facts, preferences and projects, encrypted locally with Android Keystore
 - Voice command → Android speech recognition → PRIME
 - Offline Persian voice replies with an embedded sherpa-onnx/Piper engine
 - **Continue with ChatGPT** for eligible ChatGPT Plus / Pro plan usage
@@ -27,6 +28,7 @@ PRIME is the assistant identity. **P6** is the PRIME product-model identity show
 PRIME is designed local-first:
 
 - ChatGPT OAuth tokens are encrypted with the Android Keystore before being stored.
+- Explicit PRIME long-term memories are also encrypted with Android Keystore; PRIME does not silently extract memories from every conversation.
 - Access and refresh tokens are never written to source code or app logs.
 - Phone actions execute locally on the Android device.
 - The optional Device Bridge is off until the user starts it.
@@ -34,7 +36,7 @@ PRIME is designed local-first:
 - The Accessibility Service is off until the user enables it.
 - PRIME does not need an OpenAI API key.
 
-The ChatGPT-plan OAuth flow does **not** give PRIME access to the user's previous ChatGPT conversations, memories, or ChatGPT files.
+The ChatGPT-plan OAuth flow does **not** give PRIME access to the user's previous ChatGPT conversations, memories, or ChatGPT files. PRIME's own long-term memory is a separate local feature: the user explicitly asks PRIME to remember or forget an item, retrieval happens locally, and only a small relevant subset is added to a model request.
 
 ## Sign in with ChatGPT
 
