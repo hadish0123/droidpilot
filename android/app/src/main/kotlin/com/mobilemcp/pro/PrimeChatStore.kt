@@ -270,10 +270,6 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
         if (clean.isBlank()) return emptyList()
 
         val boundedLimit = limit.coerceIn(1, 200)
-        val pattern = "%" + clean
-            .replace("\", "\\")
-            .replace("%", "\%")
-            .replace("_", "\_") + "%"
 
         val result = mutableListOf<PrimeStoredMessage>()
         readableDatabase.query(
@@ -288,8 +284,8 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
                 "parent_message_id",
                 "metadata_json"
             ),
-            "content LIKE ? ESCAPE '\\'",
-            arrayOf(pattern),
+            "instr(lower(content), lower(?)) > 0",
+            arrayOf(clean),
             null,
             null,
             "created_at DESC, id DESC",
@@ -426,9 +422,11 @@ class PrimeChatStore(context: Context) : SQLiteOpenHelper(
         if (current != "New chat") return
 
         val clean = firstUserText
-            .replace("
-", " ")
-            .replace(Regex("\s+"), " ")
+            .replace('\n', ' ')
+            .replace(
+                Regex("""\s+"""),
+                " "
+            )
             .trim()
 
         val title = when {
