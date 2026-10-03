@@ -30,9 +30,10 @@ class PrimeChatBranchingTest {
             "src/main/kotlin/com/mobilemcp/pro/MainActivity.kt"
         ).readText()
 
-        assertTrue(source.contains("titleSuffix = \" · edited\""))
-        assertTrue(source.contains("titleSuffix = \" · regenerated\""))
-        assertTrue(source.contains("persistUserMessage = false"))
+        assertTrue(source.contains("\" · edit\""))
+        assertTrue(source.contains("\" · regenerate\""))
+        assertTrue(source.contains("forkBeforeMessage("))
+        assertTrue(source.contains("forkThroughMessage("))
         assertFalse(source.contains("deleteMessagesAfter("))
     }
 }
