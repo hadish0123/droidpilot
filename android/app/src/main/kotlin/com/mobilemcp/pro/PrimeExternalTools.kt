@@ -96,15 +96,138 @@ internal object PrimeMcpToolRisk {
     }
 }
 
+internal object PrimeMcpExternalCatalog {
+    fun definitions(
+        discovery: PrimeMcpDiscovery
+    ): List<PrimeExternalToolDefinition> {
+        val tools = discovery.tools
+            .take(40)
+            .map { tool ->
+                PrimeExternalToolDefinition(
+                    command =
+                        PrimeMcpToolSource.commandFor(
+                            discovery.serverId,
+                            tool.name
+                        ),
+                    displayName = tool.name,
+                    description = tool.description,
+                    inputSchema = tool.inputSchema,
+                    minimumRisk =
+                        PrimeMcpToolRisk.minimumRisk(
+                            tool
+                        ),
+                    sourceLabel =
+                        discovery.serverName
+                )
+            }
+
+        val resources = discovery.resources
+            .take(24)
+            .map { resource ->
+                PrimeExternalToolDefinition(
+                    command =
+                        PrimeMcpToolSource
+                            .resourceCommandFor(
+                                discovery.serverId,
+                                resource.uri
+                            ),
+                    displayName =
+                        resource.name
+                            ?: resource.uri,
+                    description = buildString {
+                        resource.description
+                            ?.takeIf {
+                                it.isNotBlank()
+                            }
+                            ?.let {
+                                append(it)
+                                append(" · ")
+                            }
+                        append(
+                            "Read MCP resource: "
+                        )
+                        append(resource.uri)
+                    },
+                    inputSchema =
+                        JSONObject()
+                            .put(
+                                "type",
+                                "object"
+                            )
+                            .put(
+                                "additionalProperties",
+                                false
+                            ),
+                    minimumRisk =
+                        ToolRisk.READ,
+                    sourceLabel =
+                        discovery.serverName
+                )
+            }
+
+        val prompts = discovery.prompts
+            .take(24)
+            .map { prompt ->
+                PrimeExternalToolDefinition(
+                    command =
+                        PrimeMcpToolSource
+                            .promptCommandFor(
+                                discovery.serverId,
+                                prompt.name
+                            ),
+                    displayName =
+                        prompt.name,
+                    description =
+                        prompt.description
+                            ?: "Get MCP prompt template",
+                    inputSchema =
+                        JSONObject()
+                            .put(
+                                "type",
+                                "object"
+                            )
+                            .put(
+                                "description",
+                                "Arguments passed to the MCP prompt template"
+                            ),
+                    minimumRisk =
+                        ToolRisk.READ,
+                    sourceLabel =
+                        discovery.serverName
+                )
+            }
+
+        return (
+            tools +
+                resources +
+                prompts
+            ).take(88)
+    }
+}
+
 internal class PrimeMcpToolSource(
     private val serverStore: PrimeMcpServerStore,
     private val client: PrimeMcpClient
 ) : PrimeExternalToolSource {
 
-    private data class Target(
-        val serverId: String,
-        val toolName: String
-    )
+    private sealed interface Target {
+        val serverId: String
+
+        data class Tool(
+            override val serverId: String,
+            val toolName: String
+        ) : Target
+
+        data class Resource(
+            override val serverId: String,
+            val uri: String
+        ) : Target
+
+        data class Prompt(
+            override val serverId: String,
+            val promptName: String
+        ) : Target
+    }
 
     private val lock = Any()
     private val discoveries =
@@ -149,31 +272,10 @@ internal class PrimeMcpToolSource(
         }
 
         return snapshot
-            .flatMap { discovery ->
-                discovery.tools
-                    .take(40)
-                    .map { tool ->
-                        PrimeExternalToolDefinition(
-                            command = commandFor(
-                                discovery.serverId,
-                                tool.name
-                            ),
-                            displayName = tool.name,
-                            description =
-                                tool.description,
-                            inputSchema =
-                                tool.inputSchema,
-                            minimumRisk =
-                                PrimeMcpToolRisk
-                                    .minimumRisk(
-                                        tool
-                                    ),
-                            sourceLabel =
-                                discovery.serverName
-                        )
-                    }
-            }
-            .take(80)
+            .flatMap(
+                PrimeMcpExternalCatalog::definitions
+            )
+            .take(100)
     }
 
     override suspend fun execute(
@@ -196,27 +298,72 @@ internal class PrimeMcpToolSource(
             )
 
         return try {
-            val result = client.callTool(
-                config = server,
-                toolName = target.toolName,
-                arguments = params
-            )
+            when (target) {
+                is Target.Tool -> {
+                    val result = client.callTool(
+                        config = server,
+                        toolName =
+                            target.toolName,
+                        arguments = params
+                    )
 
-            val summary = result.text
-                .trim()
-                .take(6_000)
-                .ifBlank {
-                    if (result.isError) {
-                        "MCP tool returned an error"
-                    } else {
-                        "MCP tool completed"
-                    }
+                    val summary = result.text
+                        .trim()
+                        .take(6_000)
+                        .ifBlank {
+                            if (result.isError) {
+                                "MCP tool returned an error"
+                            } else {
+                                "MCP tool completed"
+                            }
+                        }
+
+                    PrimeActionResult(
+                        success =
+                            !result.isError,
+                        summary = summary
+                    )
                 }
 
-            PrimeActionResult(
-                success = !result.isError,
-                summary = summary
-            )
+                is Target.Resource -> {
+                    val text =
+                        client.readResource(
+                            config = server,
+                            uri = target.uri
+                        )
+                            .trim()
+                            .take(6_000)
+
+                    PrimeActionResult(
+                        true,
+                        text.ifBlank {
+                            "MCP resource returned no text content"
+                        }
+                    )
+                }
+
+                is Target.Prompt -> {
+                    val text =
+                        client.getPrompt(
+                            config = server,
+                            promptName =
+                                target.promptName,
+                            arguments =
+                                params.takeIf {
+                                    it.length() > 0
+                                }
+                        )
+                            .trim()
+                            .take(6_000)
+
+                    PrimeActionResult(
+                        true,
+                        text.ifBlank {
+                            "MCP prompt returned no text content"
+                        }
+                    )
+                }
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -260,9 +407,41 @@ internal class PrimeMcpToolSource(
                             tool.name
                         ) == command
                     ) {
-                        return Target(
+                        return Target.Tool(
                             discovery.serverId,
                             tool.name
+                        )
+                    }
+                }
+
+            discovery.resources
+                .take(24)
+                .forEach { resource ->
+                    if (
+                        resourceCommandFor(
+                            discovery.serverId,
+                            resource.uri
+                        ) == command
+                    ) {
+                        return Target.Resource(
+                            discovery.serverId,
+                            resource.uri
+                        )
+                    }
+                }
+
+            discovery.prompts
+                .take(24)
+                .forEach { prompt ->
+                    if (
+                        promptCommandFor(
+                            discovery.serverId,
+                            prompt.name
+                        ) == command
+                    ) {
+                        return Target.Prompt(
+                            discovery.serverId,
+                            prompt.name
                         )
                     }
                 }
@@ -275,27 +454,63 @@ internal class PrimeMcpToolSource(
         internal fun commandFor(
             serverId: String,
             toolName: String
+        ): String =
+            namespacedCommand(
+                prefix = "mcp",
+                serverId = serverId,
+                itemName = toolName,
+                fallback = "tool"
+            )
+
+        internal fun resourceCommandFor(
+            serverId: String,
+            uri: String
+        ): String =
+            namespacedCommand(
+                prefix = "mcpres",
+                serverId = serverId,
+                itemName = uri,
+                fallback = "resource"
+            )
+
+        internal fun promptCommandFor(
+            serverId: String,
+            promptName: String
+        ): String =
+            namespacedCommand(
+                prefix = "mcpprompt",
+                serverId = serverId,
+                itemName = promptName,
+                fallback = "prompt"
+            )
+
+        private fun namespacedCommand(
+            prefix: String,
+            serverId: String,
+            itemName: String,
+            fallback: String
         ): String {
             val serverHash =
                 sha256(serverId).take(10)
-            val toolHash =
-                sha256(toolName).take(8)
-            val safeName = toolName
+            val itemHash =
+                sha256(itemName).take(8)
+            val safeName = itemName
                 .lowercase(Locale.ROOT)
                 .replace(
                     Regex("[^a-z0-9_\\-]+"),
                     "_"
                 )
                 .trim('_')
-                .ifBlank { "tool" }
+                .ifBlank { fallback }
                 .take(48)
 
-            return "mcp__" +
+            return prefix +
+                "__" +
                 serverHash +
                 "__" +
                 safeName +
                 "__" +
-                toolHash
+                itemHash
         }
 
         private fun sha256(
