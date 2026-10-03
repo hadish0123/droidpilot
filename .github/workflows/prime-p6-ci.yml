@@ -104,7 +104,7 @@ jobs:
           working-directory: ./android
           disable-animations: true
           script: |
-            set -euo pipefail
+            set -eu
             chmod +x ./gradlew
             ./gradlew --no-daemon connectedDebugAndroidTest assembleDebug
 
