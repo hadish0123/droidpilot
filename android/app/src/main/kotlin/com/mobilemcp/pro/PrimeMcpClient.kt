@@ -21,7 +21,8 @@ internal enum class PrimeMcpProtocolEra {
 internal data class PrimeMcpTool(
     val name: String,
     val description: String?,
-    val inputSchema: JSONObject?
+    val inputSchema: JSONObject?,
+    val annotations: JSONObject? = null
 )
 
 internal data class PrimeMcpResource(
@@ -440,6 +441,10 @@ internal class PrimeMcpClient(
                     inputSchema = item
                         .optJSONObject(
                             "inputSchema"
+                        ),
+                    annotations = item
+                        .optJSONObject(
+                            "annotations"
                         )
                 )
             }
