@@ -17,6 +17,8 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.text.Editable
 import android.text.TextWatcher
+import android.text.method.LinkMovementMethod
+import android.text.util.Linkify
 import android.view.Gravity
 import android.view.View
 import android.view.accessibility.AccessibilityManager
@@ -1525,6 +1527,13 @@ class MainActivity : AppCompatActivity() {
     ) {
         val clean = message.trim()
         view.text = if (isUser) clean else "PRIME\n$clean"
+        Linkify.addLinks(
+            view,
+            Linkify.WEB_URLS
+        )
+        view.linksClickable = true
+        view.movementMethod =
+            LinkMovementMethod.getInstance()
         view.textDirection = if (
             clean.any { it.code in 0x0600..0x06FF }
         ) {
