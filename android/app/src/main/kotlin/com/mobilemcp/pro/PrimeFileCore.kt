@@ -31,7 +31,9 @@ internal data class PrimeSessionDocument(
     val kind: PrimeDocumentKind,
     val textChars: Int,
     val chunkCount: Int,
-    val addedAt: Long
+    val addedAt: Long,
+    val persistedAttachmentId: Long? = null,
+    val storageUri: String? = null
 )
 
 internal data class PrimeFileChunk(
@@ -171,7 +173,11 @@ internal class PrimeAttachmentSession(
     private var nextId = 1L
 
     @Synchronized
-    fun add(document: PrimeParsedDocument): PrimeSessionDocument {
+    fun add(
+        document: PrimeParsedDocument,
+        persistedAttachmentId: Long? = null,
+        storageUri: String? = null
+    ): PrimeSessionDocument {
         val now = System.currentTimeMillis()
         val id = nextId++
         val sessionDocument = PrimeSessionDocument(
@@ -181,7 +187,9 @@ internal class PrimeAttachmentSession(
             kind = document.kind,
             textChars = document.text.length,
             chunkCount = document.chunks.size,
-            addedAt = now
+            addedAt = now,
+            persistedAttachmentId = persistedAttachmentId,
+            storageUri = storageUri
         )
 
         documents.addLast(sessionDocument)
